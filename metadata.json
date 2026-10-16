@@ -1,0 +1,6 @@
+{
+  "name": "DeX Launcher",
+  "description": "Samsung DeX style desktop launcher for Android with freeform multitasking, taskbar overlay, and Shizuku integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

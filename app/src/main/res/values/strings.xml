@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">DeX Launcher</string>
+    <string name="swipe_up_to_unlock">Vuốt lên để mở</string>
+    <string name="apps">Ứng dụng</string>
+    <string name="search_apps">Tìm kiếm ứng dụng…</string>
+    <string name="settings">Cài đặt DeX</string>
+    <string name="wallpaper">Hình nền</string>
+    <string name="shizuku_title">Kết nối Shizuku</string>
+    <string name="freeform_mode">Chế độ cửa sổ đa nhiệm (Freeform)</string>
+    <string name="taskbar_overlay">Thanh tác vụ đè (Taskbar Overlay)</string>
+    <string name="desktop_settings">Cài đặt Desktop</string>
+    <string name="pin_to_desktop">Ghim ra Desktop</string>
+    <string name="unpin_from_desktop">Bỏ ghim khỏi Desktop</string>
+    <string name="pin_to_taskbar">Ghim vào Taskbar</string>
+    <string name="unpin_from_taskbar">Bỏ ghim khỏi Taskbar</string>
+    <string name="app_info">Thông tin ứng dụng</string>
+    <string name="notification_channel_screen">Dịch vụ trạng thái màn hình DeX</string>
+    <string name="notification_channel_taskbar">Dịch vụ thanh tác vụ nổi DeX</string>
+    <string name="screen_service_running">DeX Launcher đang giám sát trạng thái màn hình</string>
+    <string name="taskbar_service_running">Thanh tác vụ DeX đang hiển thị nổi</string>
+</resources>

@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Monitor frame -->
+    <path
+        android:strokeColor="#2B66FF"
+        android:strokeWidth="3"
+        android:strokeLineJoin="round"
+        android:fillColor="#1C2436"
+        android:pathData="M24,28 h60 a4,4 0 0,1 4,4 v38 a4,4 0 0,1 -4,4 h-60 a4,4 0 0,1 -4,-4 v-38 a4,4 0 0,1 4,-4 z"/>
+    <!-- Monitor stand -->
+    <path
+        android:fillColor="#2B66FF"
+        android:pathData="M51,74 h6 v6 h-6 z M42,80 h24 v3 h-24 z"/>
+    <!-- Windows inside monitor -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M30,36 h22 v18 h-22 z"/>
+    <path
+        android:fillColor="#818CF8"
+        android:pathData="M56,42 h22 v24 h-22 z"/>
+    <!-- Taskbar bar inside monitor -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M28,68 h52 v2 h-52 z"/>
+</vector>
