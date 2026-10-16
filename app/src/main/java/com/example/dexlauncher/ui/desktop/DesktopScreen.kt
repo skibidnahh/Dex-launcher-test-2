@@ -3,30 +3,36 @@ package com.example.dexlauncher.ui.desktop
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.dexlauncher.data.model.AppInfo
 import com.example.dexlauncher.data.repository.AppRepository
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DesktopScreen(
     appRepository: AppRepository,
@@ -44,6 +50,13 @@ fun DesktopScreen(
     val scope = rememberCoroutineScope()
 
     var selectedAppForMenu by remember { mutableStateOf<AppInfo?>(null) }
+    var localApps by remember(pinnedDesktopApps) { mutableStateOf(pinnedDesktopApps) }
+
+    var draggedItemPackage by remember { mutableStateOf<String?>(null) }
+    var draggedItemIndex by remember { mutableIntStateOf(-1) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var totalDragDistance by remember { mutableFloatStateOf(0f) }
+    val itemBounds = remember { mutableStateMapOf<Int, Rect>() }
 
     Box(
         modifier = Modifier
@@ -56,7 +69,8 @@ fun DesktopScreen(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            items(pinnedDesktopApps, key = { it.packageName }) { app ->
+            itemsIndexed(localApps, key = { _, app -> app.packageName }) { index, app ->
+                val isBeingDragged = draggedItemPackage == app.packageName
                 val iconBitmap = remember(app.packageName) {
                     appRepository.getAppIconBitmap(app.packageName)
                 }
@@ -64,15 +78,87 @@ fun DesktopScreen(
                 Column(
                     modifier = Modifier
                         .width((iconSize + 24).dp)
-                        .clip(RoundedCornerShape(iconCornerRadius.dp))
-                        .combinedClickable(
-                            onClick = {
-                                onLaunchApp(app.packageName)
-                            },
-                            onLongClick = {
-                                selectedAppForMenu = app
+                        .onGloballyPositioned { coords ->
+                            itemBounds[index] = coords.boundsInParent()
+                        }
+                        .zIndex(if (isBeingDragged) 10f else 1f)
+                        .graphicsLayer {
+                            if (isBeingDragged) {
+                                translationX = dragOffset.x
+                                translationY = dragOffset.y
+                                scaleX = 1.15f
+                                scaleY = 1.15f
+                                alpha = 0.92f
+                                shadowElevation = 16.dp.toPx()
                             }
-                        )
+                        }
+                        .clip(RoundedCornerShape(iconCornerRadius.dp))
+                        .pointerInput(app.packageName) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    draggedItemPackage = app.packageName
+                                    draggedItemIndex = index
+                                    dragOffset = Offset.Zero
+                                    totalDragDistance = 0f
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragOffset += dragAmount
+                                    totalDragDistance += dragAmount.getDistance()
+
+                                    if (totalDragDistance > 20f && draggedItemIndex in localApps.indices) {
+                                        val currentSlot = itemBounds[draggedItemIndex]
+                                        if (currentSlot != null) {
+                                            val currentCenter = currentSlot.center + dragOffset
+                                            var targetSlotIndex = -1
+                                            for ((slotIdx, rect) in itemBounds) {
+                                                if (rect.contains(currentCenter)) {
+                                                    targetSlotIndex = slotIdx
+                                                    break
+                                                }
+                                            }
+
+                                            if (targetSlotIndex != -1 && targetSlotIndex != draggedItemIndex && targetSlotIndex in localApps.indices) {
+                                                val mutable = localApps.toMutableList()
+                                                val moved = mutable.removeAt(draggedItemIndex)
+                                                mutable.add(targetSlotIndex, moved)
+                                                localApps = mutable
+
+                                                val newSlot = itemBounds[targetSlotIndex]
+                                                if (newSlot != null) {
+                                                    dragOffset = currentCenter - newSlot.center
+                                                }
+                                                draggedItemIndex = targetSlotIndex
+                                            }
+                                        }
+                                    }
+                                },
+                                onDragEnd = {
+                                    if (totalDragDistance < 20f) {
+                                        selectedAppForMenu = app
+                                    } else {
+                                        scope.launch {
+                                            appRepository.saveDesktopAppOrder(localApps.map { it.packageName })
+                                        }
+                                    }
+                                    draggedItemPackage = null
+                                    draggedItemIndex = -1
+                                    dragOffset = Offset.Zero
+                                    totalDragDistance = 0f
+                                },
+                                onDragCancel = {
+                                    draggedItemPackage = null
+                                    draggedItemIndex = -1
+                                    dragOffset = Offset.Zero
+                                    totalDragDistance = 0f
+                                }
+                            )
+                        }
+                        .clickable {
+                            if (draggedItemPackage == null) {
+                                onLaunchApp(app.packageName)
+                            }
+                        }
                         .padding(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {

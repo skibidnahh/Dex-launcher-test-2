@@ -191,6 +191,12 @@ class AppRepository(private val context: Context) {
         val currentSet = getPinnedDesktopPackages().toMutableSet()
         currentSet.add(packageName)
         prefs.edit().putStringSet("pinned_desktop_packages", currentSet).apply()
+
+        val currentOrder = getDesktopAppOrder().toMutableList()
+        if (!currentOrder.contains(packageName)) {
+            currentOrder.add(packageName)
+            prefs.edit().putString("desktop_app_order", currentOrder.joinToString(",")).apply()
+        }
         refreshApps()
     }
 
@@ -198,6 +204,12 @@ class AppRepository(private val context: Context) {
         val currentSet = getPinnedDesktopPackages().toMutableSet()
         currentSet.remove(packageName)
         prefs.edit().putStringSet("pinned_desktop_packages", currentSet).apply()
+
+        val currentOrder = getDesktopAppOrder().toMutableList()
+        if (currentOrder.contains(packageName)) {
+            currentOrder.remove(packageName)
+            prefs.edit().putString("desktop_app_order", currentOrder.joinToString(",")).apply()
+        }
         refreshApps()
     }
 

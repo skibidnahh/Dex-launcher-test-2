@@ -4,10 +4,10 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.animation.*
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -23,22 +23,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.dexlauncher.data.model.AppInfo
 import com.example.dexlauncher.data.repository.AppRepository
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AppDrawerOverlay(
     visible: Boolean,
     appRepository: AppRepository,
     onDismiss: () -> Unit,
-    onStartDragIcon: (AppInfo, Offset) -> Unit,
+    onStartDragIcon: (AppInfo, Offset) -> Unit = { _, _ -> },
     onLaunchApp: (String) -> Unit = {},
     onDragIconMove: (Offset) -> Unit = {},
     onDragIconEnd: () -> Unit = {}
@@ -53,6 +57,10 @@ fun AppDrawerOverlay(
     val scope = rememberCoroutineScope()
 
     var contextMenuApp by remember { mutableStateOf<AppInfo?>(null) }
+    var draggingApp by remember { mutableStateOf<AppInfo?>(null) }
+    var dragPosition by remember { mutableStateOf(Offset.Zero) }
+    var totalDragDistance by remember { mutableFloatStateOf(0f) }
+    val itemCoords = remember { mutableStateMapOf<String, Offset>() }
 
     val filteredApps = remember(installedApps, hiddenPackages, searchQuery) {
         installedApps.filter { app ->
@@ -69,8 +77,12 @@ fun AppDrawerOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.45f))
-                .combinedClickable(onClick = onDismiss, onLongClick = {}),
+                .background(Color.Black.copy(alpha = if (draggingApp != null) 0.15f else 0.45f))
+                .clickable {
+                    if (draggingApp == null) {
+                        onDismiss()
+                    }
+                },
             contentAlignment = Alignment.BottomStart
         ) {
             Surface(
@@ -78,6 +90,9 @@ fun AppDrawerOverlay(
                     .padding(start = 16.dp, bottom = 64.dp)
                     .width(480.dp)
                     .height(600.dp)
+                    .graphicsLayer {
+                        alpha = if (draggingApp != null) 0.15f else 1f
+                    }
                     .clip(RoundedCornerShape(16.dp)),
                 color = Color(0xEE212121),
                 tonalElevation = 16.dp
@@ -118,33 +133,50 @@ fun AppDrawerOverlay(
                             Column(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(8.dp))
-                                    .pointerInput(app) {
+                                    .onGloballyPositioned { coords ->
+                                        itemCoords[app.packageName] = coords.positionInRoot()
+                                    }
+                                    .pointerInput(app.packageName) {
                                         detectDragGesturesAfterLongPress(
                                             onDragStart = { offset ->
-                                                onDismiss()
+                                                draggingApp = app
+                                                val startRoot = itemCoords[app.packageName] ?: Offset.Zero
+                                                dragPosition = startRoot + offset
+                                                totalDragDistance = 0f
                                                 onStartDragIcon(app, offset)
                                             },
                                             onDrag = { change, dragAmount ->
                                                 change.consume()
+                                                dragPosition += dragAmount
+                                                totalDragDistance += dragAmount.getDistance()
                                                 onDragIconMove(dragAmount)
                                             },
                                             onDragEnd = {
-                                                onDragIconEnd()
+                                                if (totalDragDistance < 20f) {
+                                                    contextMenuApp = app
+                                                } else {
+                                                    scope.launch {
+                                                        appRepository.pinToDesktop(app.packageName)
+                                                    }
+                                                    onDragIconEnd()
+                                                    onDismiss()
+                                                }
+                                                draggingApp = null
+                                                totalDragDistance = 0f
                                             },
                                             onDragCancel = {
+                                                draggingApp = null
+                                                totalDragDistance = 0f
                                                 onDragIconEnd()
                                             }
                                         )
                                     }
-                                    .combinedClickable(
-                                        onClick = {
+                                    .clickable {
+                                        if (draggingApp == null) {
                                             onDismiss()
                                             onLaunchApp(app.packageName)
-                                        },
-                                        onLongClick = {
-                                            contextMenuApp = app
                                         }
-                                    )
+                                    }
                                     .padding(8.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
@@ -171,6 +203,62 @@ fun AppDrawerOverlay(
                                 )
                             }
                         }
+                    }
+                }
+            }
+
+            // Floating drag preview that follows finger over desktop
+            if (draggingApp != null) {
+                val dragIconBitmap = remember(draggingApp!!.packageName) {
+                    appRepository.getAppIconBitmap(draggingApp!!.packageName)
+                }
+                Surface(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (dragPosition.x - 48.dp.toPx()).toInt(),
+                                (dragPosition.y - 56.dp.toPx()).toInt()
+                            )
+                        }
+                        .clip(RoundedCornerShape(16.dp)),
+                    color = Color(0xEE1E1E1E),
+                    shadowElevation = 18.dp,
+                    border = BorderStroke(2.dp, Color(0xFF00E5FF))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (dragIconBitmap != null) {
+                            Image(
+                                bitmap = dragIconBitmap,
+                                contentDescription = draggingApp!!.label,
+                                modifier = Modifier.size(54.dp)
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .background(Color.Gray, RoundedCornerShape(10.dp))
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = draggingApp!!.label,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Thả vào Desktop để ghim",
+                            color = Color(0xFF80CBC4),
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
