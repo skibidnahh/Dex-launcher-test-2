@@ -30,7 +30,10 @@ fun TaskbarView(
     onToggleQuickPanel: () -> Unit,
     onOpenSettings: () -> Unit,
     onToggleStandby: () -> Unit,
-    onLaunchApp: (String) -> Unit = {}
+    onLaunchApp: (String) -> Unit = {},
+    onGoHome: () -> Unit = {},
+    onBack: () -> Unit = {},
+    onRecents: () -> Unit = {}
 ) {
     val pinnedTaskbarApps by appRepository.pinnedTaskbarApps.collectAsState()
     val installedApps by appRepository.installedApps.collectAsState()
@@ -79,19 +82,19 @@ fun TaskbarView(
             Spacer(modifier = Modifier.width(4.dp))
 
             IconButton(
-                onClick = {},
+                onClick = onRecents,
                 modifier = Modifier.size(36.dp)
             ) {
                 Icon(Icons.Default.Menu, contentDescription = "Ứng dụng gần đây", tint = Color.LightGray)
             }
             IconButton(
-                onClick = {},
+                onClick = onGoHome,
                 modifier = Modifier.size(36.dp)
             ) {
                 Icon(Icons.Default.Home, contentDescription = "Trang chủ", tint = Color.LightGray)
             }
             IconButton(
-                onClick = {},
+                onClick = onBack,
                 modifier = Modifier.size(36.dp)
             ) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại", tint = Color.LightGray)

@@ -21,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -37,12 +38,17 @@ fun AppDrawerOverlay(
     visible: Boolean,
     appRepository: AppRepository,
     onDismiss: () -> Unit,
-    onStartDragIcon: (AppInfo, androidx.compose.ui.geometry.Offset) -> Unit,
-    onLaunchApp: (String) -> Unit = {}
+    onStartDragIcon: (AppInfo, Offset) -> Unit,
+    onLaunchApp: (String) -> Unit = {},
+    onDragIconMove: (Offset) -> Unit = {},
+    onDragIconEnd: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val installedApps by appRepository.installedApps.collectAsState()
     val hiddenPackages by appRepository.hiddenPackages.collectAsState()
+    val pinnedDesktopApps by appRepository.pinnedDesktopApps.collectAsState()
+    val pinnedTaskbarApps by appRepository.pinnedTaskbarApps.collectAsState()
+
     var searchQuery by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
@@ -63,7 +69,7 @@ fun AppDrawerOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.4f))
+                .background(Color.Black.copy(alpha = 0.45f))
                 .combinedClickable(onClick = onDismiss, onLongClick = {}),
             contentAlignment = Alignment.BottomStart
         ) {
@@ -118,9 +124,16 @@ fun AppDrawerOverlay(
                                                 onDismiss()
                                                 onStartDragIcon(app, offset)
                                             },
-                                            onDrag = { _, _ -> },
-                                            onDragEnd = {},
-                                            onDragCancel = {}
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                onDragIconMove(dragAmount)
+                                            },
+                                            onDragEnd = {
+                                                onDragIconEnd()
+                                            },
+                                            onDragCancel = {
+                                                onDragIconEnd()
+                                            }
                                         )
                                     }
                                     .combinedClickable(
@@ -165,41 +178,104 @@ fun AppDrawerOverlay(
             // Context Menu Dialog for Long Press on App
             if (contextMenuApp != null) {
                 val app = contextMenuApp!!
+                val isPinnedDesktop = pinnedDesktopApps.any { it.packageName == app.packageName }
+                val isPinnedTaskbar = pinnedTaskbarApps.any { it.packageName == app.packageName }
+
                 AlertDialog(
                     onDismissRequest = { contextMenuApp = null },
                     title = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    text = { Text("Tùy chọn ứng dụng", maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            scope.launch {
-                                appRepository.pinToDesktop(app.packageName)
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // Ghim / Bỏ ghim Desktop
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        if (isPinnedDesktop) {
+                                            appRepository.unpinFromDesktop(app.packageName)
+                                        } else {
+                                            appRepository.pinToDesktop(app.packageName)
+                                        }
+                                    }
+                                    contextMenuApp = null
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (isPinnedDesktop) "Bỏ ghim khỏi Desktop" else "Ghim ra Desktop",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
-                            contextMenuApp = null
-                        }) {
-                            Text("Thêm Desktop", maxLines = 1, overflow = TextOverflow.Ellipsis)
+
+                            // Ghim / Bỏ ghim Taskbar
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        if (isPinnedTaskbar) {
+                                            appRepository.unpinFromTaskbar(app.packageName)
+                                        } else {
+                                            appRepository.pinToTaskbar(app.packageName)
+                                        }
+                                    }
+                                    contextMenuApp = null
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (isPinnedTaskbar) "Bỏ ghim khỏi Taskbar" else "Ghim vào Taskbar",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            // Ẩn ứng dụng
+                            TextButton(
+                                onClick = {
+                                    appRepository.hideApp(app.packageName)
+                                    contextMenuApp = null
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Ẩn ứng dụng", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+
+                            // Gỡ cài đặt
+                            TextButton(
+                                onClick = {
+                                    try {
+                                        val uninstallIntent = Intent(Intent.ACTION_DELETE).apply {
+                                            data = Uri.parse("package:${app.packageName}")
+                                        }
+                                        context.startActivity(uninstallIntent)
+                                    } catch (_: Exception) {}
+                                    contextMenuApp = null
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Gỡ cài đặt", color = Color(0xFFFF5252), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+
+                            // Thông tin ứng dụng
+                            TextButton(
+                                onClick = {
+                                    try {
+                                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                            data = Uri.parse("package:${app.packageName}")
+                                        }
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {}
+                                    contextMenuApp = null
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Thông tin ứng dụng", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     },
+                    confirmButton = {},
                     dismissButton = {
-                        Row {
-                            TextButton(onClick = {
-                                scope.launch {
-                                    appRepository.pinToTaskbar(app.packageName)
-                                }
-                                contextMenuApp = null
-                            }) {
-                                Text("Ghim Taskbar", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                            TextButton(onClick = {
-                                try {
-                                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                        data = Uri.parse("package:${app.packageName}")
-                                    }
-                                    context.startActivity(intent)
-                                } catch (_: Exception) {}
-                                contextMenuApp = null
-                            }) {
-                                Text("Thông tin", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
+                        TextButton(onClick = { contextMenuApp = null }) {
+                            Text("Đóng", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 )
