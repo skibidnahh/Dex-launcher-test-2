@@ -20,12 +20,40 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import java.util.UUID
+
+data class DesktopFolder(
+    val id: String,
+    val name: String,
+    val packageNames: List<String>,
+    val isLarge: Boolean = false,
+    val xPercent: Float = 0.1f,
+    val yPercent: Float = 0.1f
+)
+
+enum class DesktopWidgetType(val title: String) {
+    CLOCK_CALENDAR("Đồng hồ & Lịch"),
+    WEATHER("Thời tiết"),
+    SYSTEM_STATS("Tài nguyên Hệ thống"),
+    STICKY_NOTE("Ghi chú Nhanh"),
+    MEDIA_PLAYER("Trình phát Media"),
+    SEARCH("Tìm kiếm Nhanh")
+}
+
+data class DesktopWidgetItem(
+    val id: String,
+    val type: DesktopWidgetType,
+    val xPercent: Float,
+    val yPercent: Float,
+    val widthDp: Int,
+    val heightDp: Int
+)
 
 class AppRepository(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("dex_apps_pref", Context.MODE_PRIVATE)
 
-    private val iconCache = LruCache<String, ImageBitmap>(100)
+    private val iconCache = LruCache<String, ImageBitmap>(120)
 
     private val _installedApps = MutableStateFlow<List<AppInfo>>(emptyList())
     val installedApps: StateFlow<List<AppInfo>> = _installedApps.asStateFlow()
@@ -44,6 +72,12 @@ class AppRepository(private val context: Context) {
 
     private val _hiddenPackages = MutableStateFlow<Set<String>>(loadHiddenPackages())
     val hiddenPackages: StateFlow<Set<String>> = _hiddenPackages.asStateFlow()
+
+    private val _folders = MutableStateFlow<List<DesktopFolder>>(loadFolders())
+    val folders: StateFlow<List<DesktopFolder>> = _folders.asStateFlow()
+
+    private val _widgets = MutableStateFlow<List<DesktopWidgetItem>>(loadWidgets())
+    val widgets: StateFlow<List<DesktopWidgetItem>> = _widgets.asStateFlow()
 
     fun getAppIconBitmap(packageName: String): ImageBitmap? {
         iconCache.get(packageName)?.let { return it }
@@ -176,6 +210,33 @@ class AppRepository(private val context: Context) {
         }
     }
 
+    fun getDesktopAppPositions(): Map<String, Pair<Float, Float>> {
+        val raw = prefs.getString("desktop_app_positions", "") ?: ""
+        if (raw.isBlank()) return emptyMap()
+        val result = mutableMapOf<String, Pair<Float, Float>>()
+        raw.split(";").forEach { entry ->
+            val parts = entry.split(":")
+            if (parts.size == 2) {
+                val coords = parts[1].split(",")
+                if (coords.size == 2) {
+                    val x = coords[0].toFloatOrNull()
+                    val y = coords[1].toFloatOrNull()
+                    if (x != null && y != null) {
+                        result[parts[0]] = Pair(x, y)
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    fun saveDesktopAppPosition(packageName: String, x: Float, y: Float) {
+        val current = getDesktopAppPositions().toMutableMap()
+        current[packageName] = Pair(x, y)
+        val serialized = current.entries.joinToString(";") { "${it.key}:${it.value.first},${it.value.second}" }
+        prefs.edit().putString("desktop_app_positions", serialized).apply()
+    }
+
     fun getDesktopAppOrder(): List<String> {
         val raw = prefs.getString("desktop_app_order", "") ?: ""
         return if (raw.isBlank()) emptyList() else raw.split(",")
@@ -283,5 +344,165 @@ class AppRepository(private val context: Context) {
                 _runningPackages.value = current
             }
         } catch (_: Exception) {}
+    }
+
+    // --- Quản lý Thư mục Màn hình chính (Desktop Folders) ---
+    private fun loadFolders(): List<DesktopFolder> {
+        val raw = prefs.getString("desktop_folders", "") ?: ""
+        if (raw.isBlank()) return emptyList()
+        val list = mutableListOf<DesktopFolder>()
+        raw.split(";;").forEach { item ->
+            val parts = item.split("::")
+            if (parts.size >= 6) {
+                val id = parts[0]
+                val name = parts[1]
+                val pkgs = if (parts[2].isBlank()) emptyList() else parts[2].split(",")
+                val isLarge = parts[3].toBoolean()
+                val x = parts[4].toFloatOrNull() ?: 0.1f
+                val y = parts[5].toFloatOrNull() ?: 0.1f
+                list.add(DesktopFolder(id, name, pkgs, isLarge, x, y))
+            }
+        }
+        return list
+    }
+
+    private fun persistFolders(folders: List<DesktopFolder>) {
+        val serialized = folders.joinToString(";;") { f ->
+            "${f.id}::${f.name}::${f.packageNames.joinToString(",")}::${f.isLarge}::${f.xPercent}::${f.yPercent}"
+        }
+        prefs.edit().putString("desktop_folders", serialized).apply()
+        _folders.value = folders
+    }
+
+    fun createFolder(app1: String, app2: String, x: Float, y: Float): DesktopFolder {
+        val newFolder = DesktopFolder(
+            id = "folder_" + UUID.randomUUID().toString().take(8),
+            name = "Thư mục mới",
+            packageNames = listOf(app1, app2),
+            isLarge = false,
+            xPercent = x,
+            yPercent = y
+        )
+        val updated = _folders.value + newFolder
+        persistFolders(updated)
+        return newFolder
+    }
+
+    fun addAppToFolder(folderId: String, packageName: String) {
+        val updated = _folders.value.map { folder ->
+            if (folder.id == folderId && !folder.packageNames.contains(packageName)) {
+                folder.copy(packageNames = folder.packageNames + packageName)
+            } else {
+                folder
+            }
+        }
+        persistFolders(updated)
+    }
+
+    fun removeAppFromFolder(folderId: String, packageName: String) {
+        val updated = _folders.value.mapNotNull { folder ->
+            if (folder.id == folderId) {
+                val newPkgs = folder.packageNames - packageName
+                if (newPkgs.isEmpty()) null else folder.copy(packageNames = newPkgs)
+            } else {
+                folder
+            }
+        }
+        persistFolders(updated)
+    }
+
+    fun renameFolder(folderId: String, newName: String) {
+        val updated = _folders.value.map { folder ->
+            if (folder.id == folderId) folder.copy(name = newName) else folder
+        }
+        persistFolders(updated)
+    }
+
+    fun toggleFolderSize(folderId: String) {
+        val updated = _folders.value.map { folder ->
+            if (folder.id == folderId) folder.copy(isLarge = !folder.isLarge) else folder
+        }
+        persistFolders(updated)
+    }
+
+    fun dissolveFolder(folderId: String) {
+        val updated = _folders.value.filter { it.id != folderId }
+        persistFolders(updated)
+    }
+
+    fun updateFolderPosition(folderId: String, x: Float, y: Float) {
+        val updated = _folders.value.map { folder ->
+            if (folder.id == folderId) folder.copy(xPercent = x, yPercent = y) else folder
+        }
+        persistFolders(updated)
+    }
+
+    // --- Quản lý Widget Màn hình chính (Resizable Widgets) ---
+    private fun loadWidgets(): List<DesktopWidgetItem> {
+        val raw = prefs.getString("desktop_widgets", "") ?: ""
+        if (raw.isBlank()) return emptyList()
+        val list = mutableListOf<DesktopWidgetItem>()
+        raw.split(";;").forEach { item ->
+            val parts = item.split("::")
+            if (parts.size >= 6) {
+                val id = parts[0]
+                val type = try { DesktopWidgetType.valueOf(parts[1]) } catch (_: Exception) { DesktopWidgetType.CLOCK_CALENDAR }
+                val x = parts[2].toFloatOrNull() ?: 0.5f
+                val y = parts[3].toFloatOrNull() ?: 0.1f
+                val w = parts[4].toIntOrNull() ?: 280
+                val h = parts[5].toIntOrNull() ?: 150
+                list.add(DesktopWidgetItem(id, type, x, y, w, h))
+            }
+        }
+        return list
+    }
+
+    private fun persistWidgets(widgets: List<DesktopWidgetItem>) {
+        val serialized = widgets.joinToString(";;") { w ->
+            "${w.id}::${w.type.name}::${w.xPercent}::${w.yPercent}::${w.widthDp}::${w.heightDp}"
+        }
+        prefs.edit().putString("desktop_widgets", serialized).apply()
+        _widgets.value = widgets
+    }
+
+    fun addWidget(type: DesktopWidgetType, x: Float = 0.5f, y: Float = 0.15f): DesktopWidgetItem {
+        val (defaultW, defaultH) = when (type) {
+            DesktopWidgetType.CLOCK_CALENDAR -> Pair(280, 140)
+            DesktopWidgetType.WEATHER -> Pair(260, 140)
+            DesktopWidgetType.SYSTEM_STATS -> Pair(270, 160)
+            DesktopWidgetType.STICKY_NOTE -> Pair(240, 180)
+            DesktopWidgetType.MEDIA_PLAYER -> Pair(280, 130)
+            DesktopWidgetType.SEARCH -> Pair(320, 70)
+        }
+        val widget = DesktopWidgetItem(
+            id = "widget_" + UUID.randomUUID().toString().take(8),
+            type = type,
+            xPercent = x.coerceIn(0.05f, 0.85f),
+            yPercent = y.coerceIn(0.05f, 0.80f),
+            widthDp = defaultW,
+            heightDp = defaultH
+        )
+        persistWidgets(_widgets.value + widget)
+        return widget
+    }
+
+    fun updateWidgetBounds(id: String, x: Float, y: Float, widthDp: Int, heightDp: Int) {
+        val updated = _widgets.value.map { w ->
+            if (w.id == id) w.copy(xPercent = x, yPercent = y, widthDp = widthDp, heightDp = heightDp) else w
+        }
+        persistWidgets(updated)
+    }
+
+    fun removeWidget(id: String) {
+        val updated = _widgets.value.filter { it.id != id }
+        persistWidgets(updated)
+    }
+
+    fun getStickyNoteText(): String {
+        return prefs.getString("sticky_note_content", "Ghi chú nhanh trên Desktop DeX...") ?: ""
+    }
+
+    fun saveStickyNoteText(text: String) {
+        prefs.edit().putString("sticky_note_content", text).apply()
     }
 }

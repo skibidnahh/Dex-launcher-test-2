@@ -34,9 +34,11 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.dexlauncher.data.model.DeXWallpaperPreset
 import com.example.dexlauncher.data.repository.LauncherSettings
 import com.example.dexlauncher.data.repository.SettingsRepository
 import com.example.dexlauncher.ui.standby.StandbyClockView
@@ -976,23 +978,134 @@ fun WallpaperSettingsPage(
     }
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        // Chế độ Đổi hình nền theo thời gian trong ngày (Tính năng số 7)
         item {
-            SettingsCard(title = "Hình nền Màn hình chính") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { desktopWallpaperLauncher.launch(arrayOf("image/*", "video/*")) }) {
-                        Text("Chọn Ảnh / Video Desktop", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            SettingsCard(title = "Chế độ Hình nền Động thông minh") {
+                val isDynamic = settings.desktopWallpaperType == "dynamic_time"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Tự động đổi theo giờ trong ngày",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "Bình minh (Sáng) • Biển ngọc (Trưa) • Hoàng hôn (Chiều) • Cyber (Đêm)",
+                            color = Color.LightGray,
+                            fontSize = 11.sp
+                        )
                     }
-                    OutlinedButton(onClick = { scope.launch { settingsRepository.updateDesktopWallpaper("", "preset") } }) {
-                        Text("Mặc định", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Switch(
+                        checked = isDynamic,
+                        onCheckedChange = { checked ->
+                            scope.launch {
+                                if (checked) {
+                                    settingsRepository.updateDesktopWallpaper("", "dynamic_time")
+                                } else {
+                                    settingsRepository.updateDesktopWallpaper(DeXWallpaperPreset.NEBULA_PURPLE.id, "preset")
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
+        // Bộ sưu tập Hình nền Preset DeX Galaxy
+        item {
+            SettingsCard(title = "Bộ sưu tập Hình nền DeX Preset") {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    items(DeXWallpaperPreset.entries) { preset ->
+                        val isSelected = settings.desktopWallpaperType == "preset" && settings.desktopWallpaperUri == preset.id
+                        Card(
+                            modifier = Modifier
+                                .width(130.dp)
+                                .height(90.dp)
+                                .border(
+                                    if (isSelected) 2.dp else 1.dp,
+                                    if (isSelected) Color(0xFF00E5FF) else Color(0x33FFFFFF),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    scope.launch {
+                                        settingsRepository.updateDesktopWallpaper(preset.id, "preset")
+                                    }
+                                },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                Canvas(modifier = Modifier.fillMaxSize()) {
+                                    val brush = Brush.linearGradient(
+                                        listOf(preset.topColor, preset.midColor, preset.bottomColor)
+                                    )
+                                    drawRect(brush = brush)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .align(Alignment.BottomCenter)
+                                        .background(Color(0xAA000000))
+                                        .padding(4.dp)
+                                ) {
+                                    Text(
+                                        text = preset.title,
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
+        // Tùy chọn Hình nền riêng cho Màn hình chính
         item {
-            SettingsCard(title = "Hình nền Màn hình chờ") {
+            SettingsCard(title = "Hình nền Tùy chỉnh Desktop (Ảnh / Video lặp lại)") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { standbyWallpaperLauncher.launch(arrayOf("image/*", "video/*")) }) {
+                    Button(
+                        onClick = { desktopWallpaperLauncher.launch(arrayOf("image/*", "video/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00BFA5))
+                    ) {
+                        Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Chọn Ảnh / Video Desktop", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    OutlinedButton(onClick = { scope.launch { settingsRepository.updateDesktopWallpaper(DeXWallpaperPreset.NEBULA_PURPLE.id, "preset") } }) {
+                        Text("Khôi phục mặc định", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                if (settings.desktopWallpaperType == "video") {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Đang dùng hình nền video lặp lại liên tục (ExoPlayer Loop)", color = Color(0xFF00FF88), fontSize = 11.sp)
+                }
+            }
+        }
+
+        // Tùy chọn Hình nền riêng cho Màn hình chờ
+        item {
+            SettingsCard(title = "Hình nền Màn hình chờ (Standby)") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { standbyWallpaperLauncher.launch(arrayOf("image/*", "video/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C4DFF))
+                    ) {
+                        Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text("Chọn Ảnh / Video Standby", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     OutlinedButton(onClick = { scope.launch { settingsRepository.updateStandbyWallpaper("", "preset") } }) {
@@ -1002,8 +1115,9 @@ fun WallpaperSettingsPage(
             }
         }
 
+        // Hiệu ứng nền
         item {
-            SettingsCard(title = "Hiệu ứng nền") {
+            SettingsCard(title = "Hiệu ứng nền (Làm tối & Làm mờ Blur)") {
                 Text("Độ tối nền (${(settings.wallpaperDim * 100).toInt()}%)", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Slider(value = settings.wallpaperDim, onValueChange = { scope.launch { settingsRepository.updateWallpaperDim(it) } }, valueRange = 0f..0.6f)
 
@@ -1046,6 +1160,41 @@ fun IconsSettingsPage(
     val scope = rememberCoroutineScope()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
+            SettingsCard(title = "Bố cục Màn hình chính (Desktop)") {
+                Text("Chế độ bố cục:", color = Color.LightGray, fontSize = 13.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = settings.desktopLayoutMode != "freeform",
+                        onClick = {
+                            scope.launch { settingsRepository.updateDesktopLayoutMode("grid") }
+                        },
+                        label = { Text("Lưới chia ô (Grid)", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = settings.desktopLayoutMode == "freeform",
+                        onClick = {
+                            scope.launch { settingsRepository.updateDesktopLayoutMode("freeform") }
+                        },
+                        label = { Text("Tự do (Freeform)", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (settings.desktopLayoutMode == "freeform") 
+                        "Chế độ tự do cho phép kéo thả biểu tượng đặt ở bất kỳ tọa độ nào trên toàn màn hình."
+                        else "Chế độ lưới chia đều các ô trên dưới trái phải, tự động gióng hàng ngay ngắn.",
+                    color = Color.Gray,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        item {
             SettingsCard(title = "Kích thước & Kiểu dáng Icon") {
                 Text("Kích thước Icon (${settings.iconSize}dp)", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Slider(
@@ -1056,6 +1205,24 @@ fun IconsSettingsPage(
                     valueRange = 40f..112f
                 )
 
+                Text("Kích thước chữ nhãn (${settings.iconLabelSize}sp)", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Slider(
+                    value = settings.iconLabelSize.toFloat(),
+                    onValueChange = {
+                        scope.launch { settingsRepository.updateIconSettings(settings.iconSize, it.toInt(), settings.iconCornerRadius, settings.showLabels, settings.showShadow) }
+                    },
+                    valueRange = 10f..18f
+                )
+
+                Text("Độ bo góc Icon (${settings.iconCornerRadius}dp)", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Slider(
+                    value = settings.iconCornerRadius.toFloat(),
+                    onValueChange = {
+                        scope.launch { settingsRepository.updateIconSettings(settings.iconSize, settings.iconLabelSize, it.toInt(), settings.showLabels, settings.showShadow) }
+                    },
+                    valueRange = 0f..28f
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1064,6 +1231,17 @@ fun IconsSettingsPage(
                     Text("Hiển thị nhãn ứng dụng", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Switch(checked = settings.showLabels, onCheckedChange = {
                         scope.launch { settingsRepository.updateIconSettings(settings.iconSize, settings.iconLabelSize, settings.iconCornerRadius, it, settings.showShadow) }
+                    })
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Bóng đổ chữ nhãn (Shadow)", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Switch(checked = settings.showShadow, onCheckedChange = {
+                        scope.launch { settingsRepository.updateIconSettings(settings.iconSize, settings.iconLabelSize, settings.iconCornerRadius, settings.showLabels, it) }
                     })
                 }
             }

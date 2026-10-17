@@ -9,11 +9,13 @@ import android.os.Build
 import com.example.dexlauncher.data.repository.AppRepository
 import com.example.dexlauncher.data.repository.SettingsRepository
 import com.example.dexlauncher.service.ScreenStateService
+import com.example.dexlauncher.shizuku.ShizukuManager
 
 class DeXApplication : Application() {
 
     val appRepository by lazy { AppRepository(this) }
     val settingsRepository by lazy { SettingsRepository(this) }
+    val shizukuManager by lazy { ShizukuManager(this) }
 
     override fun onCreate() {
         super.onCreate()

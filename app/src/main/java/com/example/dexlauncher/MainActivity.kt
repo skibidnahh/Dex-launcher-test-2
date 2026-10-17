@@ -27,6 +27,8 @@ import com.example.dexlauncher.ui.standby.StandbyScreen
 import com.example.dexlauncher.ui.taskbar.TaskbarView
 import com.example.dexlauncher.ui.theme.DeXLauncherTheme
 import com.example.dexlauncher.ui.wallpaper.WallpaperBackground
+import com.example.dexlauncher.ui.window.FreeformWindowManager
+import com.example.dexlauncher.ui.window.FreeformWindowOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -71,11 +73,11 @@ class MainActivity : ComponentActivity() {
             val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                val displayMetrics = resources.displayMetrics
-                val screenWidth = displayMetrics.widthPixels
-                val screenHeight = displayMetrics.heightPixels
+            val displayMetrics = resources.displayMetrics
+            val screenWidth = displayMetrics.widthPixels
+            val screenHeight = displayMetrics.heightPixels
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 val winWidth = (screenWidth * 0.70f).toInt().coerceIn(400, (screenWidth - 40).coerceAtLeast(400))
                 val winHeight = (screenHeight * 0.70f).toInt().coerceIn(300, (screenHeight - 60).coerceAtLeast(300))
 
@@ -98,6 +100,13 @@ class MainActivity : ComponentActivity() {
             } else {
                 startActivity(intent)
             }
+
+            // Đồng thời kích hoạt cửa sổ quản lý đa nhiệm tự do nổi trên màn hình chính
+            try {
+                val appLabel = packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0)).toString()
+                FreeformWindowManager.openOrFocusWindow(packageName, appLabel, screenWidth.toFloat(), screenHeight.toFloat())
+            } catch (_: Exception) {}
+
             DeXApplication.instance.appRepository.markAppStarted(packageName)
         } catch (_: Exception) {}
     }
@@ -181,6 +190,7 @@ fun DeXLauncherApp(
         if (isInStandby) {
             StandbyScreen(
                 settings = settingsFlow,
+                settingsRepository = settingsRepository,
                 onOpenSettings = {
                     settingsInitialPage = SettingsPage.Standby
                     isSettingsOpen = true
@@ -205,6 +215,13 @@ fun DeXLauncherApp(
                         showShadow = settingsFlow.showShadow,
                         layoutMode = settingsFlow.desktopLayoutMode,
                         onLaunchApp = onLaunchApp
+                    )
+
+                    // Lớp phủ Quản lý Cửa sổ Đa nhiệm Tự do (Freeform Windows - Feature 9)
+                    FreeformWindowOverlay(
+                        appRepository = appRepository,
+                        shizukuManager = appCtx.shizukuManager,
+                        onLaunchNativeApp = onLaunchApp
                     )
                 }
 
