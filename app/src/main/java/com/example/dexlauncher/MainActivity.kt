@@ -1,9 +1,6 @@
 package com.example.dexlauncher
 
-import android.app.ActivityOptions
 import android.content.Intent
-import android.graphics.Rect
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -14,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.example.dexlauncher.data.repository.LauncherSettings
@@ -27,11 +25,8 @@ import com.example.dexlauncher.ui.standby.StandbyScreen
 import com.example.dexlauncher.ui.taskbar.TaskbarView
 import com.example.dexlauncher.ui.theme.DeXLauncherTheme
 import com.example.dexlauncher.ui.wallpaper.WallpaperBackground
-import com.example.dexlauncher.ui.window.FreeformWindowManager
-import com.example.dexlauncher.ui.window.FreeformWindowOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
@@ -44,7 +39,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             DeXLauncherTheme {
                 DeXLauncherApp(
-                    onLaunchApp = { packageName -> launchFreeformApp(packageName) }
+                    onLaunchApp = { packageName -> launchApp(packageName) }
                 )
             }
         }
@@ -68,45 +63,11 @@ class MainActivity : ComponentActivity() {
         controller.hide(WindowInsetsCompat.Type.systemBars())
     }
 
-    fun launchFreeformApp(packageName: String) {
+    fun launchApp(packageName: String) {
         try {
             val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-
-            val displayMetrics = resources.displayMetrics
-            val screenWidth = displayMetrics.widthPixels
-            val screenHeight = displayMetrics.heightPixels
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                val winWidth = (screenWidth * 0.70f).toInt().coerceIn(400, (screenWidth - 40).coerceAtLeast(400))
-                val winHeight = (screenHeight * 0.70f).toInt().coerceIn(300, (screenHeight - 60).coerceAtLeast(300))
-
-                val runningCount = DeXApplication.instance.appRepository.runningPackages.value.size
-                val cascadeStep = (screenWidth * 0.035f).toInt().coerceIn(24, 72)
-                val cascadeIndex = runningCount % 6
-                val cascadeOffset = (cascadeIndex - 2) * cascadeStep
-
-                val maxLeft = (screenWidth - winWidth - 20).coerceAtLeast(20)
-                val left = ((screenWidth - winWidth) / 2 + cascadeOffset).coerceIn(20, maxLeft)
-
-                val maxTop = (screenHeight - winHeight - 40).coerceAtLeast(40)
-                val top = ((screenHeight - winHeight) / 2 + cascadeOffset).coerceIn(40, maxTop)
-
-                val bounds = Rect(left, top, left + winWidth, top + winHeight)
-
-                val options = ActivityOptions.makeBasic()
-                options.launchBounds = bounds
-                startActivity(intent, options.toBundle())
-            } else {
-                startActivity(intent)
-            }
-
-            // Đồng thời kích hoạt cửa sổ quản lý đa nhiệm tự do nổi trên màn hình chính
-            try {
-                val appLabel = packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0)).toString()
-                FreeformWindowManager.openOrFocusWindow(packageName, appLabel, screenWidth.toFloat(), screenHeight.toFloat())
-            } catch (_: Exception) {}
-
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
             DeXApplication.instance.appRepository.markAppStarted(packageName)
         } catch (_: Exception) {}
     }
@@ -116,6 +77,7 @@ class MainActivity : ComponentActivity() {
 fun DeXLauncherApp(
     onLaunchApp: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val appCtx = DeXApplication.instance
     val appRepository = appCtx.appRepository
     val settingsRepository = appCtx.settingsRepository
@@ -162,8 +124,6 @@ fun DeXLauncherApp(
     var settingsInitialPage by remember { mutableStateOf<SettingsPage>(SettingsPage.Main) }
     val isInStandby by StandbyStateManager.isStandbyActive.collectAsState()
 
-    val scope = rememberCoroutineScope()
-
     LaunchedEffect(Unit) {
         appRepository.refreshApps()
     }
@@ -181,9 +141,9 @@ fun DeXLauncherApp(
 
     BackHandler(enabled = isSettingsOpen || isAppDrawerOpen || isQuickPanelOpen || isInStandby) {
         if (isSettingsOpen) isSettingsOpen = false
-        else if (isInStandby) StandbyStateManager.isInStandby = false
         else if (isAppDrawerOpen) isAppDrawerOpen = false
         else if (isQuickPanelOpen) isQuickPanelOpen = false
+        else if (isInStandby) StandbyStateManager.isInStandby = false
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -216,13 +176,6 @@ fun DeXLauncherApp(
                         layoutMode = settingsFlow.desktopLayoutMode,
                         onLaunchApp = onLaunchApp
                     )
-
-                    // Lớp phủ Quản lý Cửa sổ Đa nhiệm Tự do (Freeform Windows - Feature 9)
-                    FreeformWindowOverlay(
-                        appRepository = appRepository,
-                        shizukuManager = appCtx.shizukuManager,
-                        onLaunchNativeApp = onLaunchApp
-                    )
                 }
 
                 TaskbarView(
@@ -234,7 +187,28 @@ fun DeXLauncherApp(
                         isSettingsOpen = true
                     },
                     onToggleStandby = { StandbyStateManager.isInStandby = true },
-                    onLaunchApp = onLaunchApp
+                    onLaunchApp = onLaunchApp,
+                    onGoHome = {
+                        isAppDrawerOpen = false
+                        isQuickPanelOpen = false
+                        isSettingsOpen = false
+                        StandbyStateManager.isInStandby = false
+                        try {
+                            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                                addCategory(Intent.CATEGORY_HOME)
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            context.startActivity(homeIntent)
+                        } catch (_: Exception) {}
+                    },
+                    onBack = {
+                        if (isSettingsOpen) isSettingsOpen = false
+                        else if (isAppDrawerOpen) isAppDrawerOpen = false
+                        else if (isQuickPanelOpen) isQuickPanelOpen = false
+                    },
+                    onRecents = {
+                        isAppDrawerOpen = !isAppDrawerOpen
+                    }
                 )
             }
 
@@ -242,9 +216,7 @@ fun DeXLauncherApp(
                 visible = isAppDrawerOpen,
                 appRepository = appRepository,
                 onDismiss = { isAppDrawerOpen = false },
-                onStartDragIcon = { app, _ ->
-                    scope.launch { appRepository.pinToDesktop(app.packageName) }
-                },
+                onStartDragIcon = { _, _ -> },
                 onLaunchApp = onLaunchApp
             )
 
@@ -260,7 +232,6 @@ fun DeXLauncherApp(
             }
         }
 
-        // Settings Screen overlay placed outside of isInStandby condition
         if (isSettingsOpen) {
             SettingsScreen(
                 settingsRepository = settingsRepository,

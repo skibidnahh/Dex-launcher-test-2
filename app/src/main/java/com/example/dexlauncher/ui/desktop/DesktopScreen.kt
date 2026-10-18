@@ -837,7 +837,7 @@ fun DesktopScreen(
                             ) {
                                 val icon = when (type) {
                                     DesktopWidgetType.CLOCK_CALENDAR -> Icons.Default.AccessTime
-                                    DesktopWidgetType.WEATHER -> Icons.Default.WbSunny
+                                    DesktopWidgetType.WEATHER -> Icons.Default.Thermostat
                                     DesktopWidgetType.SYSTEM_STATS -> Icons.Default.Memory
                                     DesktopWidgetType.STICKY_NOTE -> Icons.Default.StickyNote2
                                     DesktopWidgetType.MEDIA_PLAYER -> Icons.Default.PlayCircle
@@ -845,11 +845,15 @@ fun DesktopScreen(
                                 }
                                 Icon(icon, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(24.dp))
                                 Column {
-                                    Text(type.title, color = Color.White, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        text = if (type == DesktopWidgetType.WEATHER) "Nhiệt độ pin" else type.title,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                     Text(
                                         when (type) {
                                             DesktopWidgetType.CLOCK_CALENDAR -> "Đồng hồ số và thông tin ngày tháng"
-                                            DesktopWidgetType.WEATHER -> "Nhiệt độ và dự báo thời tiết"
+                                            DesktopWidgetType.WEATHER -> "Đo nhiệt độ pin thiết bị (°C) và phần trăm pin"
                                             DesktopWidgetType.SYSTEM_STATS -> "Mức sử dụng RAM, Pin và Bộ nhớ"
                                             DesktopWidgetType.STICKY_NOTE -> "Ghi chú nhanh có thể gõ chữ trực tiếp"
                                             DesktopWidgetType.MEDIA_PLAYER -> "Điều khiển nhạc và đa phương tiện"
@@ -1340,24 +1344,69 @@ fun ClockCalendarWidgetContent() {
     }
 }
 
-// --- WIDGET CONTENT 2: THỜI TIẾT ---
+// --- WIDGET CONTENT 2: NHIỆT ĐỘ PIN ---
 @Composable
 fun WeatherWidgetContent() {
+    val context = LocalContext.current
+    var batteryTempCelsius by remember { mutableFloatStateOf(0f) }
+    var batteryPct by remember { mutableIntStateOf(-1) }
+
+    DisposableEffect(context) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                val temp = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+                if (temp > 0) {
+                    batteryTempCelsius = temp / 10f
+                }
+                val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+                if (level >= 0 && scale > 0) {
+                    batteryPct = (level * 100) / scale
+                }
+            }
+        }
+        val filter = android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        val initialIntent = context.registerReceiver(receiver, filter)
+        val temp = initialIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+        if (temp > 0) {
+            batteryTempCelsius = temp / 10f
+        }
+        val level = initialIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = initialIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        if (level >= 0 && scale > 0) {
+            batteryPct = (level * 100) / scale
+        }
+        onDispose {
+            try {
+                context.unregisterReceiver(receiver)
+            } catch (_: Exception) {}
+        }
+    }
+
     Row(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceAround
     ) {
         Icon(
-            Icons.Default.WbSunny,
+            Icons.Default.Thermostat,
             contentDescription = null,
-            tint = Color(0xFFFFB300),
-            modifier = Modifier.size(46.dp)
+            tint = if (batteryTempCelsius > 38f) Color(0xFFFF5722) else Color(0xFF00E5FF),
+            modifier = Modifier.size(42.dp)
         )
         Column {
-            Text("29°C", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Text("Nắng nhẹ • TP. Hồ Chí Minh", fontSize = 11.sp, color = Color.LightGray)
-            Text("Độ ẩm: 68% • Gió: 12 km/h", fontSize = 10.sp, color = Color.Gray)
+            Text(
+                text = if (batteryTempCelsius > 0) "${batteryTempCelsius}°C" else "--°C",
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Text("Nhiệt độ pin", fontSize = 12.sp, color = Color(0xFF00E5FF), fontWeight = FontWeight.Medium)
+            Text(
+                text = if (batteryPct >= 0) "Mức pin: $batteryPct%" else "Pin: --%",
+                fontSize = 11.sp,
+                color = Color.LightGray
+            )
         }
     }
 }
