@@ -8,7 +8,12 @@ import android.os.BatteryManager
 import android.os.Environment
 import android.os.StatFs
 import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateIntOffsetAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -20,8 +25,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -59,7 +62,76 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.math.roundToInt
+import kotlin.math.abs
+
+data class GridCellPos(val c: Int, val r: Int)
+
+// Thuật toán tính toán dạt ô (Plan for Grid Reordering) tương tự mẫu nguyên bản:
+// Khi rê đè lên ô đã có ứng dụng, sau thời gian ngắn (dwell), các ô xung quanh sẽ dồn
+// sang ô trống gần nhất để nhường chỗ trống cho ứng dụng đang kéo.
+fun planForGrid(
+    currentPlaced: Map<String, GridCellPos>,
+    excludePkg: String?,
+    target: GridCellPos?,
+    cols: Int,
+    rows: Int
+): Pair<Map<String, GridCellPos>, Boolean> {
+    val out = currentPlaced.filterKeys { it != excludePkg }.toMutableMap()
+    val total = cols * rows
+    if (total <= 0) return Pair(out, false)
+
+    fun idxOf(c: Int, r: Int): Int = c * rows + r
+    fun cellOf(i: Int): GridCellPos = GridCellPos(i / rows, i % rows)
+
+    val grid = Array<String?>(total) { null }
+    for ((pkg, cell) in out) {
+        val idx = idxOf(cell.c, cell.r)
+        if (idx in 0 until total) {
+            grid[idx] = pkg
+        }
+    }
+
+    if (target == null) return Pair(out, true)
+    val t = idxOf(target.c, target.r)
+    if (t !in 0 until total) return Pair(out, false)
+    if (grid[t] == null) return Pair(out, true)
+
+    val src = if (excludePkg != null) currentPlaced[excludePkg] else null
+    val preferBack = src != null && idxOf(src.c, src.r) < t
+
+    var e = -1
+    for (k in 1 until total) {
+        val fwd = t + k
+        val back = t - k
+        val order = if (preferBack) listOf(back, fwd) else listOf(fwd, back)
+        for (i in order) {
+            if (i in 0 until total && grid[i] == null) {
+                e = i
+                break
+            }
+        }
+        if (e >= 0) break
+    }
+
+    if (e < 0) return Pair(out, false)
+
+    if (e > t) {
+        for (i in (e - 1) downTo t) {
+            val pkg = grid[i]
+            if (pkg != null) {
+                out[pkg] = cellOf(i + 1)
+            }
+        }
+    } else {
+        for (i in (e + 1)..t) {
+            val pkg = grid[i]
+            if (pkg != null) {
+                out[pkg] = cellOf(i - 1)
+            }
+        }
+    }
+    return Pair(out, true)
+}
 
 @Composable
 fun DesktopScreen(
@@ -74,9 +146,9 @@ fun DesktopScreen(
     onToggleLayoutMode: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val pinnedDesktopApps by appRepository.pinnedDesktopApps.collectAsState()
     val pinnedTaskbarApps by appRepository.pinnedTaskbarApps.collectAsState()
-    val installedApps by appRepository.installedApps.collectAsState()
     val folders by appRepository.folders.collectAsState()
     val widgets by appRepository.widgets.collectAsState()
     val scope = rememberCoroutineScope()
@@ -101,22 +173,28 @@ fun DesktopScreen(
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp.toFloat()
     val scaleFactor = (screenWidthDp / 800f).coerceIn(0.85f, 1.40f)
-    val effectiveIconSize = (iconSize * scaleFactor).toInt().coerceIn(42, 100)
-    val effectiveLabelSize = (iconLabelSize * scaleFactor).toInt().coerceIn(10, 16)
+    val effectiveIconSize = (iconSize * scaleFactor).toInt().coerceIn(44, 96)
+    val effectiveLabelSize = (iconLabelSize * scaleFactor).toInt().coerceIn(10, 15)
 
-    var draggedItemPackage by remember { mutableStateOf<String?>(null) }
-    var draggedItemIndex by remember { mutableIntStateOf(-1) }
-    var dragOffset by remember { mutableStateOf(Offset.Zero) }
-    var totalDragDistance by remember { mutableFloatStateOf(0f) }
+    // Trạng thái kéo thả
+    var draggedApp by remember { mutableStateOf<AppInfo?>(null) }
+    var dragPointerOffset by remember { mutableStateOf(Offset.Zero) }
+    var totalDragDist by remember { mutableFloatStateOf(0f) }
+    var dragVelocityX by remember { mutableFloatStateOf(0f) }
     var hoverTargetAppPkg by remember { mutableStateOf<String?>(null) }
     var hoverTargetFolderId by remember { mutableStateOf<String?>(null) }
-    val itemBounds = remember { mutableStateMapOf<Int, Rect>() }
+    val itemBounds = remember { mutableStateMapOf<String, Rect>() }
     val folderBounds = remember { mutableStateMapOf<String, Rect>() }
 
     // Tọa độ tự do (Freeform desktop positions map)
     var freeformPositions by remember {
         mutableStateOf(appRepository.getDesktopAppPositions())
     }
+
+    // Tọa độ ô lưới (Grid cell positions map: pkg -> GridCellPos(c, r))
+    var placedGridCells by remember { mutableStateOf<Map<String, GridCellPos>>(emptyMap()) }
+    var plannedGridCells by remember { mutableStateOf<Map<String, GridCellPos>>(emptyMap()) }
+    var currentHoverCell by remember { mutableStateOf<GridCellPos?>(null) }
 
     val textShadow = remember(showShadow) {
         if (showShadow) {
@@ -133,7 +211,7 @@ fun DesktopScreen(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(12.dp)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onLongPress = {
@@ -145,9 +223,69 @@ fun DesktopScreen(
         val containerWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val containerHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
 
-        val density = LocalDensity.current
-        val cellWidthPx = with(density) { (effectiveIconSize + 36).dp.toPx() }
-        val cellHeightPx = with(density) { (effectiveIconSize + 52).dp.toPx() }
+        // Tính toán các thông số lưới (Cell Width, Height, Cols, Rows)
+        val cellWidthPx = with(density) { (effectiveIconSize + 32).dp.toPx() }
+        val cellHeightPx = with(density) { (effectiveIconSize + 48).dp.toPx() }
+        val padXPx = with(density) { 12.dp.toPx() }
+        val padYPx = with(density) { 12.dp.toPx() }
+
+        val cols = remember(containerWidthPx, cellWidthPx, padXPx) {
+            ((containerWidthPx - padXPx * 2) / cellWidthPx).toInt().coerceAtLeast(1)
+        }
+        val rows = remember(containerHeightPx, cellHeightPx, padYPx) {
+            ((containerHeightPx - padYPx * 2) / cellHeightPx).toInt().coerceAtLeast(1)
+        }
+
+        // Đồng bộ ô lưới ban đầu cho từng ứng dụng
+        LaunchedEffect(localApps, cols, rows) {
+            val initial = mutableMapOf<String, GridCellPos>()
+            localApps.forEachIndexed { index, app ->
+                val c = (index / rows).coerceIn(0, cols - 1)
+                val r = (index % rows).coerceIn(0, rows - 1)
+                initial[app.packageName] = GridCellPos(c, r)
+            }
+            placedGridCells = initial
+            plannedGridCells = initial
+        }
+
+        // Nhận diện vùng "Gỡ khỏi màn hình" ở mép trên cùng
+        val isDraggingDesktop = draggedApp != null
+        val removeZoneHeightPx = with(density) { 54.dp.toPx() }
+        val isOverRemoveZone = remember(isDraggingDesktop, dragPointerOffset, containerWidthPx, removeZoneHeightPx) {
+            if (!isDraggingDesktop) false
+            else dragPointerOffset.y <= (removeZoneHeightPx + 16f) &&
+                 abs(dragPointerOffset.x - containerWidthPx / 2f) <= with(density) { 140.dp.toPx() }
+        }
+
+        val animatedTilt by animateFloatAsState(
+            targetValue = (dragVelocityX * 0.15f).coerceIn(-13f, 13f),
+            animationSpec = spring(stiffness = 500f, dampingRatio = 0.7f),
+            label = "ghostTilt"
+        )
+        val animatedGhostScale by animateFloatAsState(
+            targetValue = if (isDraggingDesktop) 1.16f else 1.0f,
+            animationSpec = spring(stiffness = 400f, dampingRatio = 0.65f),
+            label = "ghostScale"
+        )
+
+        // Dwell Timer: Khi trỏ lên một ô lưới đã có biểu tượng, sau 110ms thì các biểu tượng khác sẽ dạt ra
+        LaunchedEffect(currentHoverCell, draggedApp) {
+            if (draggedApp != null && currentHoverCell != null && !isOverRemoveZone) {
+                delay(110L)
+                val (planMap, ok) = planForGrid(
+                    currentPlaced = placedGridCells,
+                    excludePkg = draggedApp?.packageName,
+                    target = currentHoverCell,
+                    cols = cols,
+                    rows = rows
+                )
+                if (ok) {
+                    plannedGridCells = planMap
+                }
+            } else if (draggedApp != null && currentHoverCell == null) {
+                plannedGridCells = placedGridCells.filterKeys { it != draggedApp?.packageName }
+            }
+        }
 
         // --- 1. RENDER CÁC WIDGET MÀN HÌNH CHÍNH (FEATURE 18) ---
         widgets.forEach { widgetItem ->
@@ -160,7 +298,98 @@ fun DesktopScreen(
             )
         }
 
-        // --- 2. RENDER THƯ MỤC VÀ BIỂU TƯỢNG TRONG CHẾ ĐỘ FREEFORM HOẶC GRID ---
+        // --- 2. LỚP LƯỚI ĐỨT NÉT KHI ĐANG KÉO (GRID LAYER) ---
+        if (currentLayoutMode == "grid" && isDraggingDesktop) {
+            Box(modifier = Modifier.fillMaxSize().zIndex(0.5f)) {
+                for (c in 0 until cols) {
+                    for (r in 0 until rows) {
+                        Box(
+                            modifier = Modifier
+                                .offset {
+                                    IntOffset(
+                                        (padXPx + c * cellWidthPx + with(density) { 4.dp.toPx() }).toInt(),
+                                        (padYPx + r * cellHeightPx + with(density) { 4.dp.toPx() }).toInt()
+                                    )
+                                }
+                                .size((effectiveIconSize + 24).dp, (effectiveIconSize + 40).dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = Color.White.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(18.dp)
+                                )
+                        )
+                    }
+                }
+
+                // Ô định vị mục tiêu (Indicator: Xanh dương cho ô thả được, Cam/Vàng cho ô đang có app)
+                if (currentHoverCell != null && !isOverRemoveZone) {
+                    val occupiedByOther = placedGridCells.any { (pkg, cell) ->
+                        pkg != draggedApp?.packageName && cell.c == currentHoverCell?.c && cell.r == currentHoverCell?.r
+                    }
+                    val indColor = if (occupiedByOther) Color(0xFFFFB255) else Color(0xFF78AAFF)
+                    val indBg = if (occupiedByOther) Color(0x33FFB255) else Color(0x3378AAFF)
+
+                    val indX = padXPx + currentHoverCell!!.c * cellWidthPx + with(density) { 4.dp.toPx() }
+                    val indY = padYPx + currentHoverCell!!.r * cellHeightPx + with(density) { 4.dp.toPx() }
+
+                    val animatedIndX by animateFloatAsState(targetValue = indX, animationSpec = spring(stiffness = 600f, dampingRatio = 0.8f), label = "indX")
+                    val animatedIndY by animateFloatAsState(targetValue = indY, animationSpec = spring(stiffness = 600f, dampingRatio = 0.8f), label = "indY")
+
+                    Box(
+                        modifier = Modifier
+                            .offset { IntOffset(animatedIndX.toInt(), animatedIndY.toInt()) }
+                            .size((effectiveIconSize + 24).dp, (effectiveIconSize + 40).dp)
+                            .background(indBg, RoundedCornerShape(18.dp))
+                            .border(2.dp, indColor, RoundedCornerShape(18.dp))
+                    )
+                }
+            }
+        }
+
+        // --- 3. VÙNG GỠ KHỎI MÀN HÌNH (REMOVE ZONE) SLIDE-DOWN Ở MÉP TRÊN ---
+        AnimatedVisibility(
+            visible = isDraggingDesktop,
+            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter).zIndex(60f)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .padding(top = 8.dp)
+                    .width(220.dp)
+                    .height(46.dp)
+                    .graphicsLayer {
+                        scaleX = if (isOverRemoveZone) 1.06f else 1.0f
+                        scaleY = if (isOverRemoveZone) 1.06f else 1.0f
+                    },
+                shape = RoundedCornerShape(23.dp),
+                color = if (isOverRemoveZone) Color(0x99FF5A5A) else Color(0x38FF5A5A),
+                border = BorderStroke(1.dp, if (isOverRemoveZone) Color(0xFFFF5A5A) else Color(0x88FF5A5A)),
+                shadowElevation = if (isOverRemoveZone) 16.dp else 6.dp
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        Icons.Default.DeleteOutline,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Gỡ khỏi màn hình",
+                        color = Color.White,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        // --- 4. RENDER THƯ MỤC VÀ BIỂU TƯỢNG ---
         if (currentLayoutMode == "freeform") {
             // Hiển thị Thư mục (Freeform)
             folders.forEach { folder ->
@@ -216,7 +445,7 @@ fun DesktopScreen(
 
             // Hiển thị Ứng dụng Desktop tự do
             localApps.forEachIndexed { index, app ->
-                val isBeingDragged = draggedItemPackage == app.packageName
+                val isBeingDragged = draggedApp?.packageName == app.packageName
                 val isHoverTarget = hoverTargetAppPkg == app.packageName
                 val iconBitmap = remember(app.packageName) {
                     appRepository.getAppIconBitmap(app.packageName)
@@ -233,66 +462,61 @@ fun DesktopScreen(
                         .offset {
                             val basePxX = (pos.first * containerWidthPx).toInt()
                             val basePxY = (pos.second * containerHeightPx).toInt()
-                            if (isBeingDragged) {
-                                IntOffset(
-                                    (basePxX + dragOffset.x).toInt(),
-                                    (basePxY + dragOffset.y).toInt()
-                                )
-                            } else {
-                                IntOffset(basePxX, basePxY)
-                            }
+                            IntOffset(basePxX, basePxY)
                         }
                         .onGloballyPositioned { coords ->
-                            itemBounds[index] = coords.boundsInParent()
+                            itemBounds[app.packageName] = coords.boundsInParent()
                         }
-                        .zIndex(if (isBeingDragged) 20f else 1f)
+                        .graphicsLayer {
+                            alpha = if (isBeingDragged) 0f else 1f
+                        }
+                        .zIndex(1f)
                         .clip(RoundedCornerShape(iconCornerRadius.dp))
                         .pointerInput(app.packageName) {
                             detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    draggedItemPackage = app.packageName
-                                    draggedItemIndex = index
-                                    dragOffset = Offset.Zero
-                                    totalDragDistance = 0f
+                                onDragStart = { offset ->
+                                    draggedApp = app
+                                    val currentSlot = itemBounds[app.packageName]
+                                    val startPos = if (currentSlot != null) currentSlot.topLeft + offset else offset
+                                    dragPointerOffset = startPos
+                                    totalDragDist = 0f
+                                    dragVelocityX = 0f
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    dragOffset += dragAmount
-                                    totalDragDistance += dragAmount.getDistance()
+                                    dragPointerOffset += dragAmount
+                                    totalDragDist += dragAmount.getDistance()
+                                    dragVelocityX = dragVelocityX * 0.7f + dragAmount.x * 0.3f
 
-                                    // Phát hiện va chạm với app khác để tạo thư mục (Feature 16)
-                                    val currentSlot = itemBounds[draggedItemIndex]
-                                    if (currentSlot != null) {
-                                        val fingerCenter = currentSlot.center + dragOffset
-                                        var targetApp: String? = null
-                                        for ((idx, rect) in itemBounds) {
-                                            if (idx != draggedItemIndex && rect.contains(fingerCenter) && idx in localApps.indices) {
-                                                targetApp = localApps[idx].packageName
-                                                break
-                                            }
+                                    // Phát hiện va chạm với Thư mục hoặc App khác để tạo thư mục
+                                    var targetFolder: String? = null
+                                    for ((fId, rect) in folderBounds) {
+                                        if (rect.contains(dragPointerOffset)) {
+                                            targetFolder = fId
+                                            break
                                         }
-                                        hoverTargetAppPkg = targetApp
-
-                                        // Kiểm tra va chạm với Thư mục hiện có
-                                        var targetFolder: String? = null
-                                        for ((fId, rect) in folderBounds) {
-                                            if (rect.contains(fingerCenter)) {
-                                                targetFolder = fId
-                                                break
-                                            }
-                                        }
-                                        hoverTargetFolderId = targetFolder
                                     }
+                                    hoverTargetFolderId = targetFolder
+
+                                    var targetApp: String? = null
+                                    for ((pkg, rect) in itemBounds) {
+                                        if (pkg != app.packageName && rect.contains(dragPointerOffset)) {
+                                            targetApp = pkg
+                                            break
+                                        }
+                                    }
+                                    hoverTargetAppPkg = targetApp
                                 },
                                 onDragEnd = {
-                                    if (totalDragDistance < 20f) {
+                                    if (totalDragDist < 20f) {
                                         selectedAppForMenu = app
+                                    } else if (isOverRemoveZone) {
+                                        scope.launch { appRepository.unpinFromDesktop(app.packageName) }
+                                        Toast.makeText(context, "Đã gỡ ${app.label} khỏi màn hình", Toast.LENGTH_SHORT).show()
                                     } else if (hoverTargetFolderId != null) {
-                                        // Thả vào thư mục hiện có
                                         appRepository.addAppToFolder(hoverTargetFolderId!!, app.packageName)
                                         scope.launch { appRepository.unpinFromDesktop(app.packageName) }
                                     } else if (hoverTargetAppPkg != null) {
-                                        // Kéo app đè lên app -> Tạo thư mục mới (Feature 16)
                                         val dropPos = freeformPositions[hoverTargetAppPkg!!] ?: Pair(0.2f, 0.2f)
                                         appRepository.createFolder(
                                             app1 = hoverTargetAppPkg!!,
@@ -301,40 +525,29 @@ fun DesktopScreen(
                                             y = dropPos.second
                                         )
                                     } else {
-                                        val curPos = freeformPositions[app.packageName] ?: Pair(defaultX, defaultY)
-                                        val newX = (curPos.first + dragOffset.x / containerWidthPx).coerceIn(0.02f, 0.92f)
-                                        val newY = (curPos.second + dragOffset.y / containerHeightPx).coerceIn(0.02f, 0.88f)
+                                        val newX = (dragPointerOffset.x / containerWidthPx).coerceIn(0.02f, 0.90f)
+                                        val newY = (dragPointerOffset.y / containerHeightPx).coerceIn(0.02f, 0.86f)
                                         appRepository.saveDesktopAppPosition(app.packageName, newX, newY)
                                         freeformPositions = appRepository.getDesktopAppPositions()
                                     }
-                                    draggedItemPackage = null
-                                    draggedItemIndex = -1
-                                    dragOffset = Offset.Zero
-                                    totalDragDistance = 0f
+                                    draggedApp = null
+                                    totalDragDist = 0f
+                                    dragVelocityX = 0f
                                     hoverTargetAppPkg = null
                                     hoverTargetFolderId = null
                                 },
                                 onDragCancel = {
-                                    draggedItemPackage = null
-                                    draggedItemIndex = -1
-                                    dragOffset = Offset.Zero
-                                    totalDragDistance = 0f
+                                    draggedApp = null
+                                    totalDragDist = 0f
+                                    dragVelocityX = 0f
                                     hoverTargetAppPkg = null
                                     hoverTargetFolderId = null
                                 }
                             )
                         }
                         .clickable {
-                            if (draggedItemPackage == null) {
+                            if (draggedApp == null) {
                                 onLaunchApp(app.packageName)
-                            }
-                        }
-                        .graphicsLayer {
-                            if (isBeingDragged) {
-                                scaleX = 1.15f
-                                scaleY = 1.15f
-                                shadowElevation = 18.dp.toPx()
-                                alpha = 0.95f
                             }
                         }
                         .padding(6.dp)
@@ -352,169 +565,237 @@ fun DesktopScreen(
                 }
             }
         } else {
-            // Chế độ bố cục lưới ô (Grid Mode)
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = (effectiveIconSize + 36).dp),
-                modifier = Modifier.fillMaxSize(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Hiển thị các thư mục ở đầu lưới
-                items(folders.size, key = { "folder_${folders[it].id}" }) { fIndex ->
-                    val folder = folders[fIndex]
-                    val isHovered = hoverTargetFolderId == folder.id
-                    Box(
-                        modifier = Modifier
-                            .onGloballyPositioned { coords ->
-                                folderBounds[folder.id] = coords.boundsInParent()
-                            }
-                            .pointerInput(folder.id) {
-                                detectTapGestures(
-                                    onLongPress = { selectedFolderForMenu = folder },
-                                    onTap = { selectedFolderForDetail = folder }
-                                )
-                            }
-                    ) {
-                        DesktopFolderItem(
-                            folder = folder,
-                            appRepository = appRepository,
-                            isHovered = isHovered,
-                            effectiveIconSize = effectiveIconSize,
-                            iconCornerRadius = iconCornerRadius,
-                            showLabels = showLabels,
-                            textShadow = textShadow,
-                            onAppClick = { onLaunchApp(it) },
-                            onFolderClick = { selectedFolderForDetail = folder },
-                            onToggleSize = { appRepository.toggleFolderSize(folder.id) }
-                        )
-                    }
+            // Chế độ Lưới ô (Grid Layout) theo mẫu: Các icon dạt chỗ mượt mà (Animated Reorder)
+            // Hiển thị các thư mục
+            folders.forEach { folder ->
+                val isHovered = hoverTargetFolderId == folder.id
+                val folderW = if (folder.isLarge) (effectiveIconSize * 2 + 36).dp else (effectiveIconSize + 24).dp
+                val folderH = if (folder.isLarge) (effectiveIconSize * 2 + 56).dp else (effectiveIconSize + 36).dp
+
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (folder.xPercent * containerWidthPx).toInt(),
+                                (folder.yPercent * containerHeightPx).toInt()
+                            )
+                        }
+                        .onGloballyPositioned { coords ->
+                            folderBounds[folder.id] = coords.boundsInParent()
+                        }
+                        .pointerInput(folder.id) {
+                            detectTapGestures(
+                                onLongPress = { selectedFolderForMenu = folder },
+                                onTap = { selectedFolderForDetail = folder }
+                            )
+                        }
+                        .width(folderW)
+                        .height(folderH)
+                        .zIndex(2f)
+                ) {
+                    DesktopFolderItem(
+                        folder = folder,
+                        appRepository = appRepository,
+                        isHovered = isHovered,
+                        effectiveIconSize = effectiveIconSize,
+                        iconCornerRadius = iconCornerRadius,
+                        showLabels = showLabels,
+                        textShadow = textShadow,
+                        onAppClick = { onLaunchApp(it) },
+                        onFolderClick = { selectedFolderForDetail = folder },
+                        onToggleSize = { appRepository.toggleFolderSize(folder.id) }
+                    )
+                }
+            }
+
+            // Hiển thị các ứng dụng trong chế độ Lưới ô có chuyển động mượt mà khi dạt chỗ
+            localApps.forEachIndexed { index, app ->
+                val isBeingDragged = draggedApp?.packageName == app.packageName
+                val isHoverTarget = hoverTargetAppPkg == app.packageName
+                val iconBitmap = remember(app.packageName) {
+                    appRepository.getAppIconBitmap(app.packageName)
                 }
 
-                // Hiển thị các app độc lập
-                itemsIndexed(localApps, key = { _, app -> app.packageName }) { index, app ->
-                    val isBeingDragged = draggedItemPackage == app.packageName
-                    val isHoverTarget = hoverTargetAppPkg == app.packageName
-                    val iconBitmap = remember(app.packageName) {
-                        appRepository.getAppIconBitmap(app.packageName)
-                    }
+                // Lấy vị trí ô đã tính trong kế hoạch dạt ô
+                val plannedCell = plannedGridCells[app.packageName] ?: placedGridCells[app.packageName] ?: GridCellPos(index / rows, index % rows)
+                val targetPxX = padXPx + plannedCell.c * cellWidthPx + with(density) { 4.dp.toPx() }
+                val targetPxY = padYPx + plannedCell.r * cellHeightPx + with(density) { 4.dp.toPx() }
 
-                    Column(
-                        modifier = Modifier
-                            .width((effectiveIconSize + 32).dp)
-                            .onGloballyPositioned { coords ->
-                                itemBounds[index] = coords.boundsInParent()
-                            }
-                            .zIndex(if (isBeingDragged) 20f else 1f)
-                            .graphicsLayer {
-                                if (isBeingDragged) {
-                                    translationX = dragOffset.x
-                                    translationY = dragOffset.y
-                                    scaleX = 1.15f
-                                    scaleY = 1.15f
-                                    alpha = 0.95f
-                                    shadowElevation = 18.dp.toPx()
-                                }
-                            }
-                            .clip(RoundedCornerShape(iconCornerRadius.dp))
-                            .pointerInput(app.packageName) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = {
-                                        draggedItemPackage = app.packageName
-                                        draggedItemIndex = index
-                                        dragOffset = Offset.Zero
-                                        totalDragDistance = 0f
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        dragOffset += dragAmount
-                                        totalDragDistance += dragAmount.getDistance()
+                val animatedSlotOffset by animateIntOffsetAsState(
+                    targetValue = IntOffset(targetPxX.toInt(), targetPxY.toInt()),
+                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.75f),
+                    label = "iconSlot_${app.packageName}"
+                )
 
-                                        if (totalDragDistance > 20f && draggedItemIndex in localApps.indices) {
-                                            val currentSlot = itemBounds[draggedItemIndex]
-                                            if (currentSlot != null) {
-                                                val currentCenter = currentSlot.center + dragOffset
+                Box(
+                    modifier = Modifier
+                        .offset { animatedSlotOffset }
+                        .onGloballyPositioned { coords ->
+                            itemBounds[app.packageName] = coords.boundsInParent()
+                        }
+                        .graphicsLayer {
+                            // Ẩn bản gốc khi đang bay bổng dưới dạng ghost
+                            alpha = if (isBeingDragged) 0f else 1f
+                        }
+                        .zIndex(1f)
+                        .clip(RoundedCornerShape(iconCornerRadius.dp))
+                        .pointerInput(app.packageName) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { offset ->
+                                    draggedApp = app
+                                    val currentSlot = itemBounds[app.packageName]
+                                    val startPos = if (currentSlot != null) currentSlot.topLeft + offset else offset
+                                    dragPointerOffset = startPos
+                                    totalDragDist = 0f
+                                    dragVelocityX = 0f
+                                    currentHoverCell = placedGridCells[app.packageName]
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragPointerOffset += dragAmount
+                                    totalDragDist += dragAmount.getDistance()
+                                    dragVelocityX = dragVelocityX * 0.7f + dragAmount.x * 0.3f
 
-                                                // Phát hiện kéo đè lên thư mục
-                                                var targetFolder: String? = null
-                                                for ((fId, rect) in folderBounds) {
-                                                    if (rect.contains(currentCenter)) {
-                                                        targetFolder = fId
-                                                        break
-                                                    }
-                                                }
-                                                hoverTargetFolderId = targetFolder
+                                    // Xác định ô lưới hover
+                                    val c = ((dragPointerOffset.x - padXPx) / cellWidthPx).toInt()
+                                    val r = ((dragPointerOffset.y - padYPx) / cellHeightPx).toInt()
+                                    currentHoverCell = if (c in 0 until cols && r in 0 until rows) GridCellPos(c, r) else null
 
-                                                // Phát hiện kéo đè lên app khác để tạo thư mục
-                                                var targetSlotIndex = -1
-                                                for ((slotIdx, rect) in itemBounds) {
-                                                    if (slotIdx != draggedItemIndex && rect.contains(currentCenter)) {
-                                                        targetSlotIndex = slotIdx
-                                                        break
-                                                    }
-                                                }
-                                                if (targetSlotIndex != -1 && targetSlotIndex in localApps.indices) {
-                                                    hoverTargetAppPkg = localApps[targetSlotIndex].packageName
-                                                } else {
-                                                    hoverTargetAppPkg = null
-                                                }
-                                            }
+                                    // Kiểm tra kéo đè lên thư mục
+                                    var targetFolder: String? = null
+                                    for ((fId, rect) in folderBounds) {
+                                        if (rect.contains(dragPointerOffset)) {
+                                            targetFolder = fId
+                                            break
                                         }
-                                    },
-                                    onDragEnd = {
-                                        if (totalDragDistance < 20f) {
-                                            selectedAppForMenu = app
-                                        } else if (hoverTargetFolderId != null) {
-                                            appRepository.addAppToFolder(hoverTargetFolderId!!, app.packageName)
-                                            scope.launch { appRepository.unpinFromDesktop(app.packageName) }
-                                        } else if (hoverTargetAppPkg != null) {
-                                            // Tạo thư mục mới khi kéo đè app
-                                            appRepository.createFolder(
-                                                app1 = hoverTargetAppPkg!!,
-                                                app2 = app.packageName,
-                                                x = 0.3f,
-                                                y = 0.3f
-                                            )
-                                        } else {
-                                            scope.launch {
-                                                appRepository.saveDesktopAppOrder(localApps.map { it.packageName })
-                                            }
-                                        }
-                                        draggedItemPackage = null
-                                        draggedItemIndex = -1
-                                        dragOffset = Offset.Zero
-                                        totalDragDistance = 0f
-                                        hoverTargetAppPkg = null
-                                        hoverTargetFolderId = null
-                                    },
-                                    onDragCancel = {
-                                        draggedItemPackage = null
-                                        draggedItemIndex = -1
-                                        dragOffset = Offset.Zero
-                                        totalDragDistance = 0f
-                                        hoverTargetAppPkg = null
-                                        hoverTargetFolderId = null
                                     }
-                                )
-                            }
-                            .clickable {
-                                if (draggedItemPackage == null) {
-                                    onLaunchApp(app.packageName)
+                                    hoverTargetFolderId = targetFolder
+                                },
+                                onDragEnd = {
+                                    if (totalDragDist < 20f) {
+                                        selectedAppForMenu = app
+                                    } else if (isOverRemoveZone) {
+                                        scope.launch { appRepository.unpinFromDesktop(app.packageName) }
+                                        Toast.makeText(context, "Đã gỡ ${app.label} khỏi màn hình", Toast.LENGTH_SHORT).show()
+                                    } else if (hoverTargetFolderId != null) {
+                                        appRepository.addAppToFolder(hoverTargetFolderId!!, app.packageName)
+                                        scope.launch { appRepository.unpinFromDesktop(app.packageName) }
+                                    } else if (currentHoverCell != null) {
+                                        // Thả vào ô lưới đích: áp dụng kế hoạch dạt ô và lưu thứ tự mới
+                                        val (finalPlan, ok) = planForGrid(
+                                            currentPlaced = placedGridCells,
+                                            excludePkg = app.packageName,
+                                            target = currentHoverCell,
+                                            cols = cols,
+                                            rows = rows
+                                        )
+                                        if (ok) {
+                                            val committed = finalPlan.toMutableMap()
+                                            committed[app.packageName] = currentHoverCell!!
+                                            placedGridCells = committed
+                                            plannedGridCells = committed
+
+                                            // Sắp xếp lại thứ tự app theo ô lưới (cột trước, hàng sau)
+                                            val sortedApps = committed.entries.sortedWith(
+                                                compareBy({ it.value.c }, { it.value.r })
+                                            ).map { it.key }
+                                            scope.launch {
+                                                appRepository.saveDesktopAppOrder(sortedApps)
+                                            }
+                                        }
+                                    }
+                                    draggedApp = null
+                                    totalDragDist = 0f
+                                    dragVelocityX = 0f
+                                    currentHoverCell = null
+                                    hoverTargetFolderId = null
+                                    hoverTargetAppPkg = null
+                                },
+                                onDragCancel = {
+                                    draggedApp = null
+                                    totalDragDist = 0f
+                                    dragVelocityX = 0f
+                                    currentHoverCell = null
+                                    hoverTargetFolderId = null
+                                    hoverTargetAppPkg = null
                                 }
+                            )
+                        }
+                        .clickable {
+                            if (draggedApp == null) {
+                                onLaunchApp(app.packageName)
                             }
-                            .padding(6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        DesktopAppIcon(
-                            app = app,
-                            iconBitmap = iconBitmap,
-                            effectiveIconSize = effectiveIconSize,
-                            effectiveLabelSize = effectiveLabelSize,
-                            iconCornerRadius = iconCornerRadius,
-                            showLabels = showLabels,
-                            textShadow = textShadow,
-                            isHoverTarget = isHoverTarget
+                        }
+                        .padding(6.dp)
+                ) {
+                    DesktopAppIcon(
+                        app = app,
+                        iconBitmap = iconBitmap,
+                        effectiveIconSize = effectiveIconSize,
+                        effectiveLabelSize = effectiveLabelSize,
+                        iconCornerRadius = iconCornerRadius,
+                        showLabels = showLabels,
+                        textShadow = textShadow,
+                        isHoverTarget = isHoverTarget
+                    )
+                }
+            }
+        }
+
+        // --- 5. BIỂU TƯỢNG BAY BỔNG DÍNH TAY (GHOST DRAGGED ICON VỚI ĐỘ NGHIÊNG VẬT LÝ) ---
+        if (draggedApp != null) {
+            val app = draggedApp!!
+            val dragIconBitmap = remember(app.packageName) {
+                appRepository.getAppIconBitmap(app.packageName)
+            }
+            Box(
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            (dragPointerOffset.x - with(density) { (effectiveIconSize / 2 + 12).dp.toPx() }).toInt(),
+                            (dragPointerOffset.y - with(density) { (effectiveIconSize / 2 + 12).dp.toPx() }).toInt()
                         )
                     }
+                    .zIndex(100f)
+                    .graphicsLayer {
+                        scaleX = animatedGhostScale
+                        scaleY = animatedGhostScale
+                        rotationZ = animatedTilt
+                        shadowElevation = 24.dp.toPx()
+                    }
+                    .clip(RoundedCornerShape(iconCornerRadius.dp))
+                    .background(Color(0xEE1E2436))
+                    .border(
+                        2.dp,
+                        if (isOverRemoveZone) Color(0xFFFF5A5A) else Color(0xFF78AAFF),
+                        RoundedCornerShape(iconCornerRadius.dp)
+                    )
+                    .padding(8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (dragIconBitmap != null) {
+                        Image(
+                            bitmap = dragIconBitmap,
+                            contentDescription = app.label,
+                            modifier = Modifier.size(effectiveIconSize.dp)
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(effectiveIconSize.dp)
+                                .background(Color.Gray, RoundedCornerShape(iconCornerRadius.dp))
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = app.label,
+                        color = Color.White,
+                        fontSize = (effectiveLabelSize + 1).sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
@@ -591,7 +872,6 @@ fun DesktopScreen(
 
                         TextButton(
                             onClick = {
-                                // Giải tán thư mục: đưa các app trở lại desktop
                                 scope.launch {
                                     folder.packageNames.forEach { pkg ->
                                         appRepository.pinToDesktop(pkg)
@@ -782,9 +1062,9 @@ fun DesktopScreen(
                             onClick = {
                                 freeformPositions = emptyMap()
                                 localApps.forEachIndexed { i, app ->
-                                    val cols = 6
-                                    val defaultX = ((i % cols) * 0.14f + 0.04f).coerceIn(0.04f, 0.90f)
-                                    val defaultY = ((i / cols) * 0.20f + 0.06f).coerceIn(0.06f, 0.86f)
+                                    val defCols = 6
+                                    val defaultX = ((i % defCols) * 0.14f + 0.04f).coerceIn(0.04f, 0.90f)
+                                    val defaultY = ((i / defCols) * 0.20f + 0.06f).coerceIn(0.06f, 0.86f)
                                     appRepository.saveDesktopAppPosition(app.packageName, defaultX, defaultY)
                                 }
                                 freeformPositions = appRepository.getDesktopAppPositions()

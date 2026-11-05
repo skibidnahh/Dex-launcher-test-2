@@ -3,18 +3,22 @@ package com.example.dexlauncher.ui.drawer
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PushPin
@@ -38,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.dexlauncher.data.model.AppInfo
 import com.example.dexlauncher.data.repository.AppRepository
 import kotlinx.coroutines.launch
@@ -66,6 +71,7 @@ fun AppDrawerOverlay(
     var draggingApp by remember { mutableStateOf<AppInfo?>(null) }
     var dragPosition by remember { mutableStateOf(Offset.Zero) }
     var totalDragDistance by remember { mutableFloatStateOf(0f) }
+    var dragVelocityX by remember { mutableFloatStateOf(0f) }
     val itemCoords = remember { mutableStateMapOf<String, Offset>() }
 
     val filteredApps = remember(installedApps, hiddenPackages, searchQuery) {
@@ -84,6 +90,29 @@ fun AppDrawerOverlay(
         dragPosition.y >= (screenHeightPx - taskbarHeightPx)
     }
 
+    // Kích thước ô lưới mô phỏng trên màn hình chính
+    val cellWidthPx = with(density) { 96.dp.toPx() }
+    val cellHeightPx = with(density) { 104.dp.toPx() }
+    val padXPx = with(density) { 16.dp.toPx() }
+    val padYPx = with(density) { 16.dp.toPx() }
+
+    val cols = remember(screenWidthPx, cellWidthPx, padXPx) {
+        ((screenWidthPx - padXPx * 2) / cellWidthPx).toInt().coerceAtLeast(1)
+    }
+    val rows = remember(screenHeightPx, taskbarHeightPx, cellHeightPx, padYPx) {
+        ((screenHeightPx - taskbarHeightPx - padYPx * 2) / cellHeightPx).toInt().coerceAtLeast(1)
+    }
+
+    // Tính ô lưới mà ngón tay đang trỏ tới trên màn hình chính
+    val targetCell = remember(dragPosition, cols, rows, padXPx, padYPx, cellWidthPx, cellHeightPx, isOverTaskbar) {
+        if (isOverTaskbar || dragPosition == Offset.Zero) null
+        else {
+            val c = ((dragPosition.x - padXPx) / cellWidthPx).toInt()
+            val r = ((dragPosition.y - padYPx) / cellHeightPx).toInt()
+            if (c in 0 until cols && r in 0 until rows) Pair(c, r) else null
+        }
+    }
+
     // Xác định xem ngón tay đã kéo ra khỏi ngăn chứa App Drawer chưa
     val drawerWidthPx = with(density) { 480.dp.toPx() }
     val drawerHeightPx = with(density) { 600.dp.toPx() }
@@ -95,8 +124,8 @@ fun AppDrawerOverlay(
     val animatedDrawerAlpha by animateFloatAsState(
         targetValue = when {
             draggingApp == null -> 1f
-            isDraggingOutside -> 0.18f
-            else -> 0.88f
+            isDraggingOutside -> 0.08f
+            else -> 0.82f
         },
         animationSpec = tween(durationMillis = 200),
         label = "drawerAlpha"
@@ -105,17 +134,23 @@ fun AppDrawerOverlay(
     val animatedScrimAlpha by animateFloatAsState(
         targetValue = when {
             draggingApp == null -> 0.45f
-            isDraggingOutside -> 0.08f
-            else -> 0.30f
+            isDraggingOutside -> 0.02f
+            else -> 0.25f
         },
         animationSpec = tween(durationMillis = 200),
         label = "scrimAlpha"
     )
 
+    val animatedTilt by animateFloatAsState(
+        targetValue = (dragVelocityX * 0.14f).coerceIn(-14f, 14f),
+        animationSpec = spring(stiffness = 500f, dampingRatio = 0.7f),
+        label = "drawerGhostTilt"
+    )
+
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn() + scaleIn(initialScale = 0.9f),
-        exit = fadeOut() + scaleOut(targetScale = 0.9f)
+        enter = fadeIn() + scaleIn(initialScale = 0.92f),
+        exit = fadeOut() + scaleOut(targetScale = 0.92f)
     ) {
         Box(
             modifier = Modifier
@@ -128,6 +163,46 @@ fun AppDrawerOverlay(
                 },
             contentAlignment = Alignment.BottomStart
         ) {
+            // Khi đang kéo ra ngoài màn hình chính: hiển thị lưới ô đứt nét & ô định vị (Indicator)
+            if (draggingApp != null && isDraggingOutside && !isOverTaskbar) {
+                // 1. Lưới ô mờ đứt nét trên desktop
+                Box(modifier = Modifier.fillMaxSize()) {
+                    for (c in 0 until cols) {
+                        for (r in 0 until rows) {
+                            Box(
+                                modifier = Modifier
+                                    .offset {
+                                        IntOffset(
+                                            (padXPx + c * cellWidthPx + with(density) { 4.dp.toPx() }).toInt(),
+                                            (padYPx + r * cellHeightPx + with(density) { 4.dp.toPx() }).toInt()
+                                        )
+                                    }
+                                    .size(88.dp, 96.dp)
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color.White.copy(alpha = 0.16f),
+                                        shape = RoundedCornerShape(18.dp)
+                                    )
+                            )
+                        }
+                    }
+
+                    // 2. Ô định vị mục tiêu (Indicator)
+                    if (targetCell != null) {
+                        val indX = padXPx + targetCell.first * cellWidthPx + with(density) { 4.dp.toPx() }
+                        val indY = padYPx + targetCell.second * cellHeightPx + with(density) { 4.dp.toPx() }
+                        Box(
+                            modifier = Modifier
+                                .offset { IntOffset(indX.toInt(), indY.toInt()) }
+                                .size(88.dp, 96.dp)
+                                .background(Color(120, 170, 255).copy(alpha = 0.20f), RoundedCornerShape(18.dp))
+                                .border(2.dp, Color(120, 170, 255).copy(alpha = 0.95f), RoundedCornerShape(18.dp))
+                        )
+                    }
+                }
+            }
+
+            // Giao diện khung Ngăn kéo ứng dụng (App Drawer)
             Surface(
                 modifier = Modifier
                     .padding(start = 16.dp, bottom = 64.dp)
@@ -136,9 +211,10 @@ fun AppDrawerOverlay(
                     .graphicsLayer {
                         alpha = animatedDrawerAlpha
                     }
-                    .clip(RoundedCornerShape(16.dp)),
-                color = Color(0xEE212121),
-                tonalElevation = 16.dp
+                    .clip(RoundedCornerShape(20.dp)),
+                color = Color(0xF21C2230),
+                tonalElevation = 16.dp,
+                border = BorderStroke(1.dp, Color(0x33FFFFFF))
             ) {
                 Column(
                     modifier = Modifier
@@ -150,13 +226,16 @@ fun AppDrawerOverlay(
                         onValueChange = { searchQuery = it },
                         modifier = Modifier.fillMaxWidth(),
                         placeholder = { Text("Tìm kiếm ứng dụng...", color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.LightGray) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF00E5FF)) },
                         singleLine = true,
+                        shape = RoundedCornerShape(20.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White,
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = Color.Gray
+                            focusedBorderColor = Color(0xFF00E5FF),
+                            unfocusedBorderColor = Color(0x33FFFFFF),
+                            focusedContainerColor = Color(0x22FFFFFF),
+                            unfocusedContainerColor = Color(0x14FFFFFF)
                         )
                     )
 
@@ -172,10 +251,13 @@ fun AppDrawerOverlay(
                             val iconBitmap = remember(app.packageName) {
                                 appRepository.getAppIconBitmap(app.packageName)
                             }
+                            val isPinnedDesktop = pinnedDesktopApps.any { it.packageName == app.packageName }
+                            val isItemBeingDragged = draggingApp?.packageName == app.packageName
+                            val itemAlpha = if (isItemBeingDragged) 0.25f else 1f
 
                             Column(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(12.dp))
                                     .onGloballyPositioned { coords ->
                                         itemCoords[app.packageName] = coords.positionInRoot()
                                     }
@@ -186,12 +268,14 @@ fun AppDrawerOverlay(
                                                 val startRoot = itemCoords[app.packageName] ?: Offset.Zero
                                                 dragPosition = startRoot + offset
                                                 totalDragDistance = 0f
+                                                dragVelocityX = 0f
                                                 onStartDragIcon(app, offset)
                                             },
                                             onDrag = { change, dragAmount ->
                                                 change.consume()
                                                 dragPosition += dragAmount
                                                 totalDragDistance += dragAmount.getDistance()
+                                                dragVelocityX = dragVelocityX * 0.7f + dragAmount.x * 0.3f
                                                 onDragIconMove(dragAmount)
                                             },
                                             onDragEnd = {
@@ -203,27 +287,35 @@ fun AppDrawerOverlay(
                                                     scope.launch {
                                                         appRepository.pinToTaskbar(app.packageName)
                                                     }
+                                                    Toast.makeText(context, "Đã ghim ${app.label} vào Taskbar", Toast.LENGTH_SHORT).show()
                                                     onDragIconEnd()
                                                     onDismiss()
                                                 } else {
-                                                    // Đã kéo -> Ghim ra Desktop tại vị trí thả ngón tay (Tính năng số 14)
+                                                    // Đã kéo -> Ghim ra Desktop tại ô thả ngón tay (Tính năng số 14)
                                                     scope.launch {
                                                         appRepository.pinToDesktop(app.packageName)
-                                                        if (screenWidthPx > 0 && screenHeightPx > 0) {
+                                                        if (targetCell != null && screenWidthPx > 0 && screenHeightPx > 0) {
+                                                            val dropX = (padXPx + targetCell.first * cellWidthPx + 10f) / screenWidthPx
+                                                            val dropY = (padYPx + targetCell.second * cellHeightPx + 10f) / screenHeightPx
+                                                            appRepository.saveDesktopAppPosition(app.packageName, dropX.coerceIn(0.04f, 0.90f), dropY.coerceIn(0.04f, 0.86f))
+                                                        } else if (screenWidthPx > 0 && screenHeightPx > 0) {
                                                             val dropX = (dragPosition.x / screenWidthPx).coerceIn(0.05f, 0.92f)
                                                             val dropY = (dragPosition.y / screenHeightPx).coerceIn(0.05f, 0.88f)
                                                             appRepository.saveDesktopAppPosition(app.packageName, dropX, dropY)
                                                         }
                                                     }
+                                                    Toast.makeText(context, "Đã đặt ${app.label} vào Màn hình chính", Toast.LENGTH_SHORT).show()
                                                     onDragIconEnd()
                                                     onDismiss()
                                                 }
                                                 draggingApp = null
                                                 totalDragDistance = 0f
+                                                dragVelocityX = 0f
                                             },
                                             onDragCancel = {
                                                 draggingApp = null
                                                 totalDragDistance = 0f
+                                                dragVelocityX = 0f
                                                 onDragIconEnd()
                                             }
                                         )
@@ -237,39 +329,62 @@ fun AppDrawerOverlay(
                                     .padding(8.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                val isItemBeingDragged = draggingApp?.packageName == app.packageName
-                                val itemAlpha = if (isItemBeingDragged) 0.32f else 1f
+                                // Biểu tượng app kèm chấm xanh nhận diện app đã có trên Desktop
+                                Box(contentAlignment = Alignment.TopEnd) {
+                                    if (iconBitmap != null) {
+                                        Image(
+                                            bitmap = iconBitmap,
+                                            contentDescription = app.label,
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .graphicsLayer { alpha = itemAlpha }
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .background(Color.Gray.copy(alpha = itemAlpha), RoundedCornerShape(12.dp))
+                                        )
+                                    }
 
-                                if (iconBitmap != null) {
-                                    Image(
-                                        bitmap = iconBitmap,
-                                        contentDescription = app.label,
-                                        modifier = Modifier
-                                            .size(48.dp)
-                                            .graphicsLayer { alpha = itemAlpha }
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(48.dp)
-                                            .background(Color.Gray.copy(alpha = itemAlpha), RoundedCornerShape(8.dp))
-                                    )
+                                    // Chấm xanh biểu thị ứng dụng đã xuất hiện trên Màn hình chính
+                                    if (isPinnedDesktop) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(9.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF7BE28A))
+                                                .border(1.5.dp, Color(0xFF1C2230), CircleShape)
+                                        )
+                                    }
                                 }
+
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = app.label,
                                     color = Color.White.copy(alpha = itemAlpha),
-                                    fontSize = 11.sp,
+                                    fontSize = 11.5.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Dòng ghi chú chân ngăn kéo
+                    Text(
+                        text = "Nhấn giữ một ứng dụng rồi kéo ra màn hình chính. Chấm xanh là ứng dụng đã có trên màn hình.",
+                        color = Color.White.copy(alpha = 0.55f),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
                 }
             }
 
-            // Preview icon nổi bám theo ngón tay khi đang kéo thả
+            // Preview icon nổi bám theo ngón tay khi đang kéo thả (Ghost icon với độ nghiêng vật lý)
             if (draggingApp != null) {
                 val dragIconBitmap = remember(draggingApp!!.packageName) {
                     appRepository.getAppIconBitmap(draggingApp!!.packageName)
@@ -282,17 +397,19 @@ fun AppDrawerOverlay(
                                 (dragPosition.y - 70.dp.toPx()).toInt()
                             )
                         }
+                        .zIndex(100f)
                         .graphicsLayer {
-                            scaleX = 1.15f
-                            scaleY = 1.15f
+                            scaleX = 1.16f
+                            scaleY = 1.16f
+                            rotationZ = animatedTilt
                             shadowElevation = 24.dp.toPx()
                         }
-                        .clip(RoundedCornerShape(16.dp)),
-                    color = Color(0xEE1E1E1E),
+                        .clip(RoundedCornerShape(18.dp)),
+                    color = Color(0xEE1E2436),
                     shadowElevation = 24.dp,
                     border = BorderStroke(
                         2.dp,
-                        if (isOverTaskbar) Color(0xFF00FF88) else Color(0xFF00E5FF)
+                        if (isOverTaskbar) Color(0xFF00FF88) else Color(0xFF78AAFF)
                     )
                 ) {
                     Column(
@@ -309,7 +426,7 @@ fun AppDrawerOverlay(
                             Box(
                                 modifier = Modifier
                                     .size(54.dp)
-                                    .background(Color.Gray, RoundedCornerShape(10.dp))
+                                    .background(Color.Gray, RoundedCornerShape(12.dp))
                             )
                         }
                         Spacer(modifier = Modifier.height(4.dp))
@@ -329,16 +446,16 @@ fun AppDrawerOverlay(
                             Icon(
                                 Icons.Default.PushPin,
                                 contentDescription = null,
-                                tint = if (isOverTaskbar) Color(0xFF00FF88) else Color(0xFF00E5FF),
+                                tint = if (isOverTaskbar) Color(0xFF00FF88) else Color(0xFF78AAFF),
                                 modifier = Modifier.size(12.dp)
                             )
                             Text(
                                 text = when {
                                     isOverTaskbar -> "Thả vào Taskbar để ghim"
-                                    isDraggingOutside -> "Thả vào Desktop để ghim"
+                                    isDraggingOutside -> "Thả vào ô lưới Desktop"
                                     else -> "Kéo ra Desktop hoặc Taskbar"
                                 },
-                                color = if (isOverTaskbar) Color(0xFF00FF88) else Color(0xFF00E5FF),
+                                color = if (isOverTaskbar) Color(0xFF00FF88) else Color(0xFF78AAFF),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,

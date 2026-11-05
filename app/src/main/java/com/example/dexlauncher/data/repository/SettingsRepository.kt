@@ -32,6 +32,8 @@ class SettingsRepository(private val context: Context) {
         val CLOCK_SHOW_DATE = booleanPreferencesKey("clock_show_date")
         val CLOCK_SHOW_SWIPE_UP = booleanPreferencesKey("clock_show_swipe_up")
         val CLOCK_ALIGNMENT = stringPreferencesKey("clock_alignment")
+        val CLOCK_STYLE = stringPreferencesKey("clock_style")
+        val CLOCK_COLOR_MODE = stringPreferencesKey("clock_color_mode")
 
         val ICON_SIZE = intPreferencesKey("icon_size")
         val ICON_LABEL_SIZE = intPreferencesKey("icon_label_size")
@@ -79,7 +81,9 @@ class SettingsRepository(private val context: Context) {
                 fullscreenEnabled = prefs[PreferencesKeys.FULLSCREEN_ENABLED] ?: true,
                 taskbarAutoHide = prefs[PreferencesKeys.TASKBAR_AUTO_HIDE] ?: false,
                 animationSpeed = prefs[PreferencesKeys.ANIMATION_SPEED] ?: 1.0f,
-                hiddenApps = prefs[PreferencesKeys.HIDDEN_APPS] ?: emptySet()
+                hiddenApps = prefs[PreferencesKeys.HIDDEN_APPS] ?: emptySet(),
+                clockStyle = prefs[PreferencesKeys.CLOCK_STYLE] ?: "standard",
+                clockColorMode = prefs[PreferencesKeys.CLOCK_COLOR_MODE] ?: "solid"
             )
         }
 
@@ -120,7 +124,9 @@ class SettingsRepository(private val context: Context) {
         is24H: Boolean,
         showDate: Boolean,
         showSwipeUp: Boolean,
-        alignment: String
+        alignment: String,
+        clockStyle: String = "standard",
+        clockColorMode: String = "solid"
     ) {
         context.dataStore.edit {
             it[PreferencesKeys.CLOCK_FONT] = font
@@ -138,6 +144,8 @@ class SettingsRepository(private val context: Context) {
             it[PreferencesKeys.CLOCK_SHOW_DATE] = showDate
             it[PreferencesKeys.CLOCK_SHOW_SWIPE_UP] = showSwipeUp
             it[PreferencesKeys.CLOCK_ALIGNMENT] = alignment
+            it[PreferencesKeys.CLOCK_STYLE] = clockStyle
+            it[PreferencesKeys.CLOCK_COLOR_MODE] = clockColorMode
         }
     }
 
@@ -211,5 +219,7 @@ data class LauncherSettings(
     val fullscreenEnabled: Boolean,
     val taskbarAutoHide: Boolean,
     val animationSpeed: Float,
-    val hiddenApps: Set<String>
+    val hiddenApps: Set<String>,
+    val clockStyle: String = "standard",
+    val clockColorMode: String = "solid"
 )
